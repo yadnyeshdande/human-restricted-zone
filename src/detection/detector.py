@@ -16,7 +16,7 @@ class PersonDetector:
     
     PERSON_CLASS_ID = 0
     
-    def __init__(self, model_name: str = 'yolov8n.pt', conf_threshold: float = 0.5):
+    def __init__(self, model_name: str = 'yolov8m.pt', conf_threshold: float = 0.5):
         """Initialize detector.
         
         Args:
