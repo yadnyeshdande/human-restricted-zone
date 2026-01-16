@@ -1,0 +1,337 @@
+# =============================================================================
+# File: ui/detection_page.py
+# =============================================================================
+"""Detection mode interface for live monitoring."""
+
+import cv2
+import queue
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List
+import numpy as np
+from PyQt5.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton,
+    QLabel, QScrollArea, QSizePolicy
+)
+from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtGui import QColor
+from config.config_manager import ConfigManager
+from camera.camera_manager import CameraManager
+from relay.relay_manager import RelayManager
+from detection.detection_worker import DetectionWorker
+from .video_panel import VideoPanel
+from utils.logger import get_logger
+
+logger = get_logger("DetectionPage")
+
+
+class DetectionPage(QWidget):
+    """Live detection interface."""
+    
+    def __init__(
+        self,
+        config_manager: ConfigManager,
+        camera_manager: CameraManager,
+        relay_manager: RelayManager,
+        parent=None
+    ):
+        """Initialize detection page.
+        
+        Args:
+            config_manager: Configuration manager
+            camera_manager: Camera manager
+            relay_manager: Relay manager
+            parent: Parent widget
+        """
+        super().__init__(parent)
+        self.config_manager = config_manager
+        self.camera_manager = camera_manager
+        self.relay_manager = relay_manager
+        
+        # Detection state
+        self.is_running = False
+        self.detection_workers: Dict[int, DetectionWorker] = {}
+        self.detection_queues: Dict[int, queue.Queue] = {}
+        
+        # Video panels
+        self.video_panels: Dict[int, VideoPanel] = {}
+        self.panel_containers: Dict[int, QWidget] = {}
+        
+        # Update timer
+        self.update_timer = QTimer()
+        self.update_timer.timeout.connect(self._update_displays)
+        self.update_timer.start(33)  # ~30 FPS
+        
+        # Snapshot directory
+        self.snapshot_dir = Path("snapshots")
+        self.snapshot_dir.mkdir(exist_ok=True)
+        
+        self._setup_ui()
+        self._load_cameras()
+    
+    def _setup_ui(self) -> None:
+        """Setup UI components."""
+        layout = QVBoxLayout(self)
+        
+        # Top toolbar
+        toolbar = QHBoxLayout()
+        
+        self.start_btn = QPushButton("Start Detection")
+        self.start_btn.clicked.connect(self._start_detection)
+        toolbar.addWidget(self.start_btn)
+        
+        self.stop_btn = QPushButton("Stop Detection")
+        self.stop_btn.clicked.connect(self._stop_detection)
+        self.stop_btn.setEnabled(False)
+        toolbar.addWidget(self.stop_btn)
+        
+        toolbar.addStretch()
+        
+        self.status_label = QLabel("Detection Stopped")
+        self.status_label.setStyleSheet("font-weight: bold;")
+        toolbar.addWidget(self.status_label)
+        
+        layout.addLayout(toolbar)
+        
+        # Camera grid (scrollable)
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        
+        self.camera_grid_widget = QWidget()
+        self.camera_grid = QGridLayout(self.camera_grid_widget)
+        self.camera_grid.setSpacing(10)
+        scroll_area.setWidget(self.camera_grid_widget)
+        
+        layout.addWidget(scroll_area)
+        
+        # Status panel
+        self.stats_label = QLabel("Waiting to start...")
+        self.stats_label.setWordWrap(True)
+        self.stats_label.setStyleSheet("padding: 5px; background-color: #f0f0f0;")
+        layout.addWidget(self.stats_label)
+    
+    def _load_cameras(self) -> None:
+        """Load cameras and zones from configuration."""
+        cameras = self.config_manager.get_all_cameras()
+        
+        for camera in cameras:
+            self._add_camera_panel(camera.id, camera.rtsp_url)
+    
+    def _add_camera_panel(self, camera_id: int, rtsp_url: str) -> None:
+        """Add camera panel to grid."""
+        # Calculate grid position
+        num_cameras = len(self.video_panels)
+        cols = 2  # 2 columns
+        row = num_cameras // cols
+        col = num_cameras % cols
+        
+        # Create container
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Create video panel
+        video_panel = VideoPanel(
+            camera_id=camera_id,
+            processing_resolution=self.config_manager.config.processing_resolution
+        )
+        video_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        video_panel.setMinimumSize(400, 300)
+        
+        container_layout.addWidget(video_panel)
+        
+        # Add to grid
+        self.camera_grid.addWidget(container, row, col)
+        
+        # Store references
+        self.video_panels[camera_id] = video_panel
+        self.panel_containers[camera_id] = container
+        
+        # Load zones for display
+        self._load_zones_for_camera(camera_id)
+        
+        logger.info(f"Detection panel {camera_id} added to UI")
+    
+    def _load_zones_for_camera(self, camera_id: int) -> None:
+        """Load zones for a camera."""
+        camera = self.config_manager.get_camera(camera_id)
+        if not camera or camera_id not in self.video_panels:
+            return
+        
+        zone_data = []
+        for zone in camera.zones:
+            color = self._get_zone_color(zone.relay_id)
+            zone_data.append((
+                zone.id,
+                zone.rect,
+                (color.red(), color.green(), color.blue())
+            ))
+        
+        self.video_panels[camera_id].set_zones(zone_data)
+    
+    def _get_zone_color(self, relay_id: int) -> QColor:
+        """Get color for relay ID."""
+        colors = [
+            QColor(0, 255, 0),      # Green
+            QColor(0, 255, 255),    # Cyan
+            QColor(255, 0, 255),    # Magenta
+            QColor(255, 255, 0),    # Yellow
+            QColor(255, 128, 0),    # Orange
+            QColor(128, 0, 255),    # Purple
+        ]
+        return colors[(relay_id - 1) % len(colors)]
+    
+    def _start_detection(self) -> None:
+        """Start detection on all cameras."""
+        if self.is_running:
+            return
+        
+        logger.info("Starting detection...")
+        
+        cameras = self.config_manager.get_all_cameras()
+        
+        for camera in cameras:
+            # Get frame queue from camera manager
+            frame_queue = self.camera_manager.get_frame_queue(camera.id)
+            if not frame_queue:
+                logger.warning(f"No frame queue for camera {camera.id}")
+                continue
+            
+            # Prepare zones data
+            zones_data = [
+                (zone.id, zone.rect, zone.relay_id)
+                for zone in camera.zones
+            ]
+            
+            # Create detection worker
+            worker = DetectionWorker(
+                camera_id=camera.id,
+                frame_queue=frame_queue,
+                zones=zones_data,
+                on_violation=self._handle_violation
+            )
+            
+            self.detection_workers[camera.id] = worker
+            worker.start()
+            
+            logger.info(f"Detection started for camera {camera.id}")
+        
+        self.is_running = True
+        self.start_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+        self.status_label.setText("Detection Running")
+        self.status_label.setStyleSheet("font-weight: bold; color: green;")
+    
+    def _stop_detection(self) -> None:
+        """Stop detection on all cameras."""
+        if not self.is_running:
+            return
+        
+        logger.info("Stopping detection...")
+        
+        for camera_id, worker in self.detection_workers.items():
+            worker.stop()
+            worker.join(timeout=5.0)
+            logger.info(f"Detection stopped for camera {camera_id}")
+        
+        self.detection_workers.clear()
+        self.is_running = False
+        self.start_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
+        self.status_label.setText("Detection Stopped")
+        self.status_label.setStyleSheet("font-weight: bold; color: red;")
+    
+    def _handle_violation(
+        self,
+        camera_id: int,
+        zone_id: int,
+        relay_id: int,
+        frame: np.ndarray
+    ) -> None:
+        """Handle zone violation.
+        
+        Args:
+            camera_id: Camera identifier
+            zone_id: Zone identifier
+            relay_id: Relay identifier
+            frame: Frame with violation
+        """
+        logger.warning(
+            f"VIOLATION DETECTED: Camera {camera_id}, Zone {zone_id}, Relay {relay_id}"
+        )
+        
+        # Trigger relay
+        triggered = self.relay_manager.trigger(relay_id)
+        
+        if triggered:
+            logger.info(f"Relay {relay_id} triggered")
+        else:
+            logger.debug(f"Relay {relay_id} in cooldown")
+        
+        # Save snapshot
+        self._save_snapshot(camera_id, zone_id, relay_id, frame)
+    
+    def _save_snapshot(
+        self,
+        camera_id: int,
+        zone_id: int,
+        relay_id: int,
+        frame: np.ndarray
+    ) -> None:
+        """Save violation snapshot."""
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            filename = f"violation_cam{camera_id}_zone{zone_id}_relay{relay_id}_{timestamp}.jpg"
+            filepath = self.snapshot_dir / filename
+            
+            cv2.imwrite(str(filepath), frame)
+            logger.info(f"Snapshot saved: {filename}")
+        except Exception as e:
+            logger.error(f"Failed to save snapshot: {e}")
+    
+    def _update_displays(self) -> None:
+        """Update video displays and statistics."""
+        for camera_id, video_panel in self.video_panels.items():
+            frame = self.camera_manager.get_latest_frame(camera_id)
+            if frame is not None:
+                video_panel.update_frame(frame)
+                
+                # Update info
+                cap_fps = self.camera_manager.get_fps(camera_id)
+                connected = self.camera_manager.is_connected(camera_id)
+                
+                det_fps = 0.0
+                if camera_id in self.detection_workers:
+                    det_fps = self.detection_workers[camera_id].get_fps()
+                
+                status = "Connected" if connected else "Disconnected"
+                info = f"Camera {camera_id} | {status} | Cap: {cap_fps:.1f} FPS"
+                if self.is_running:
+                    info += f" | Det: {det_fps:.1f} FPS"
+                
+                video_panel.update_info(info)
+        
+        # Update statistics
+        if self.is_running:
+            total_zones = sum(
+                len(cam.zones)
+                for cam in self.config_manager.get_all_cameras()
+            )
+            self.stats_label.setText(
+                f"Monitoring {len(self.video_panels)} cameras, "
+                f"{total_zones} restricted zones"
+            )
+    
+    def reload_configuration(self) -> None:
+        """Reload configuration after teaching mode changes."""
+        if self.is_running:
+            self._stop_detection()
+        
+        # Reload zones
+        for camera_id in self.video_panels.keys():
+            self._load_zones_for_camera(camera_id)
+        
+        logger.info("Configuration reloaded")
+
