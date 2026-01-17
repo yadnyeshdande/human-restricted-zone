@@ -15,65 +15,6 @@ class RelayUSBHID(RelayInterface):
     """USB HID relay controller using pyhid_usb_relay library.
     
     Install: pip install pyhid_usb_relay
-    """
-    
-    def __init__(self, num_channels: int = 8):
-        """Initialize USB HID relay.
-        
-        Args:
-            num_channels: Number of relay channels (default: 8)
-        """
-        self.num_channels = num_channels
-        self.device = None
-        self.states: Dict[int, bool] = {}
-        
-        try:
-            import pyhid_usb_relay
-            self.relay_lib = pyhid_usb_relay
-            self._connect()
-        except ImportError:
-            logger.error("pyhid_usb_relay not found. Install: pip install pyhid_usb_relay")
-            raise
-    
-    def _connect(self) -> bool:
-        """Connect to USB HID relay device."""
-        try:
-            # Find relay device
-            self.device = self.relay_lib.find()
-            if not self.device:
-                logger.error("No USB relay device found")
-                return False
-            
-            logger.info(f"USB Relay connected: {self.num_channels} channels")
-            logger.info(f"Current relay state: {self.device.state}")
-            
-            # Turn off all relays initially
-            for i in range(1, self.num_channels + 1):
-                self.deactivate(i)
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to connect USB relay: {e}")
-            logger.error("Make sure the device is connected and you have permissions")
-            return False
-# =============================================================================
-# ADDITIONAL FILE: relay/relay_usb_hid.py (ADD THIS NEW FILE)
-# =============================================================================
-"""USB HID relay controller using pyhid_usb_relay library."""
-
-import time
-from typing import Dict, Optional
-from .relay_interface import RelayInterface
-from utils.logger import get_logger
-
-logger = get_logger("RelayUSBHID")
-
-
-class RelayUSBHID(RelayInterface):
-    """USB HID relay controller using pyhid_usb_relay library.
-    
-    Install: pip install pyhid_usb_relay
     
     Usage example:
         import pyhid_usb_relay
@@ -251,3 +192,63 @@ class RelayUSBHID(RelayInterface):
     def __del__(self):
         """Cleanup on deletion."""
         self.close()
+
+# # =============================================================================
+# # ADDITIONAL FILE: relay/relay_usb_hid.py (ADD THIS NEW FILE)
+# # =============================================================================
+# """USB HID relay controller using pyhid_usb_relay library."""
+
+# import time
+# from typing import Dict, Optional
+# from .relay_interface import RelayInterface
+# from utils.logger import get_logger
+
+# logger = get_logger("RelayUSBHID")
+
+
+# class RelayUSBHID(RelayInterface):
+#     """USB HID relay controller using pyhid_usb_relay library.
+    
+#     Install: pip install pyhid_usb_relay
+#     """
+    
+#     def __init__(self, num_channels: int = 8):
+#         """Initialize USB HID relay.
+        
+#         Args:
+#             num_channels: Number of relay channels (default: 8)
+#         """
+#         self.num_channels = num_channels
+#         self.device = None
+#         self.states: Dict[int, bool] = {}
+        
+#         try:
+#             import pyhid_usb_relay
+#             self.relay_lib = pyhid_usb_relay
+#             self._connect()
+#         except ImportError:
+#             logger.error("pyhid_usb_relay not found. Install: pip install pyhid_usb_relay")
+#             raise
+    
+#     def _connect(self) -> bool:
+#         """Connect to USB HID relay device."""
+#         try:
+#             # Find relay device
+#             self.device = self.relay_lib.find()
+#             if not self.device:
+#                 logger.error("No USB relay device found")
+#                 return False
+            
+#             logger.info(f"USB Relay connected: {self.num_channels} channels")
+#             logger.info(f"Current relay state: {self.device.state}")
+            
+#             # Turn off all relays initially
+#             for i in range(1, self.num_channels + 1):
+#                 self.deactivate(i)
+            
+#             return True
+            
+#         except Exception as e:
+#             logger.error(f"Failed to connect USB relay: {e}")
+#             logger.error("Make sure the device is connected and you have permissions")
+#             return False
