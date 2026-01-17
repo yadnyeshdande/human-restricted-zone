@@ -29,9 +29,11 @@ class ConfigManager:
     
     def load(self) -> AppConfig:
         """Load configuration from file."""
+        from config.app_settings import SETTINGS
+        
         if not self.config_path.exists():
             logger.info("Config file not found, creating new configuration")
-            self.config = AppConfig()
+            self.config = AppConfig(processing_resolution=SETTINGS.processing_resolution)
             self.save()
             return self.config
         

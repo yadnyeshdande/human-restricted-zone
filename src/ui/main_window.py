@@ -16,6 +16,7 @@ from relay.relay_manager import RelayManager
 from .teaching_page import TeachingPage
 from .detection_page import DetectionPage
 from utils.logger import get_logger
+from .settings_page import SettingsPage
 
 logger = get_logger("MainWindow")
 
@@ -72,7 +73,13 @@ class MainWindow(QMainWindow):
         )
         self.tabs.addTab(self.detection_page, "Detection Mode")
         
+        # Settings page
+        
+        self.settings_page = SettingsPage(self.relay_manager)
+        self.tabs.addTab(self.settings_page, "Settings")
+        
         self.setCentralWidget(self.tabs)
+
     
     def _setup_menu(self) -> None:
         """Setup menu bar."""
@@ -116,6 +123,10 @@ class MainWindow(QMainWindow):
     def _setup_shortcuts(self) -> None:
         """Setup keyboard shortcuts."""
         # Shortcuts are already set in menu actions
+        settings_action = QAction("Settings", self)
+        settings_action.setShortcut("Ctrl+3")
+        settings_action.triggered.connect(lambda: self.tabs.setCurrentIndex(2))
+        # view_menu.addAction(settings_action)
         pass
     
     def _on_tab_changed(self, index: int) -> None:

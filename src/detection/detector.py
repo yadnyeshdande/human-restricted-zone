@@ -16,7 +16,13 @@ class PersonDetector:
     
     PERSON_CLASS_ID = 0
     
-    def __init__(self, model_name: str = 'yolov8m.pt', conf_threshold: float = 0.5):
+    def __init__(self, model_name: str = None, conf_threshold: float = None):
+        from config.app_settings import SETTINGS
+        
+        self.conf_threshold = conf_threshold or SETTINGS.detection_confidence
+        model_name = model_name or SETTINGS.yolo_model
+        
+        logger.info(f"Initializing YOLO detector: {model_name}, confidence: {self.conf_threshold}")
         """Initialize detector.
         
         Args:

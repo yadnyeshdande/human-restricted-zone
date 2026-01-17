@@ -40,7 +40,27 @@ def main():
         )
         
         logger.info("Initializing relay manager...")
-        relay_manager = RelayManager()
+        from config.app_settings import SETTINGS
+        
+        # Choose relay interface based on settings
+        relay_interface = None
+        if SETTINGS.use_usb_relay:
+            try:
+                from relay.relay_usb_hid import RelayUSBHID
+                relay_interface = RelayUSBHID(
+                    num_channels=SETTINGS.usb_num_channels,
+                    serial=SETTINGS.usb_serial
+                )
+                logger.info("Using pyhid_usb_relay hardware")
+            except Exception as e:
+                logger.error(f"Failed to initialize USB relay: {e}")
+                logger.error("Falling back to relay simulator")
+        
+        relay_manager = RelayManager(
+            interface=relay_interface,
+            cooldown=SETTINGS.relay_cooldown,
+            activation_duration=SETTINGS.relay_duration
+        )
         
         # Start cameras from configuration
         for camera in config.cameras:

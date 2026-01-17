@@ -1,3 +1,5 @@
 human_env_py310
 logs
 snapshots
+__pycache__
+*.pyc

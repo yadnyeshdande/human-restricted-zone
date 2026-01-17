@@ -64,17 +64,29 @@ class DetectionWorker(StoppableThread):
                 # Run detection
                 persons = self.detector.detect_persons(frame)
                 
-                # Check violations
+               # Check violations
+                from config.app_settings import SETTINGS
+                from .geometry import bbox_overlaps_rect
+                
                 for bbox in persons:
-                    center = bbox_center(bbox)
-                    
                     for zone_id, rect, relay_id in self.zones:
-                        if point_in_rect(center, rect):
+                        violation = False
+                        
+                        if SETTINGS.violation_mode == 'center':
+                            # Only trigger when person's center is inside zone
+                            center = bbox_center(bbox)
+                            violation = point_in_rect(center, rect)
+                        elif SETTINGS.violation_mode == 'overlap':
+                            # Trigger when person's bbox overlaps with zone
+                            violation = bbox_overlaps_rect(bbox, rect)
+                        
+                        if violation:
                             logger.warning(
-                                f"VIOLATION: Camera {self.camera_id}, "
-                                f"Zone {zone_id}, Relay {relay_id}"
+                                f"VIOLATION [{SETTINGS.violation_mode} mode]: "
+                                f"Camera {self.camera_id}, Zone {zone_id}, Relay {relay_id}"
                             )
                             self.on_violation(self.camera_id, zone_id, relay_id, frame)
+                            break  # Only trigger once per person
                 
                 # Update FPS
                 self.current_fps = self.fps_counter.update()

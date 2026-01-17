@@ -37,3 +37,24 @@ def bbox_center(bbox: Tuple[int, int, int, int]) -> Tuple[float, float]:
     """
     x1, y1, x2, y2 = bbox
     return ((x1 + x2) / 2, (y1 + y2) / 2)
+
+def bbox_overlaps_rect(bbox: Tuple[int, int, int, int], rect: Tuple[int, int, int, int]) -> bool:
+    '''Check if bounding box overlaps with rectangle.
+    
+    Args:
+        bbox: (x1, y1, x2, y2) person bounding box
+        rect: (x1, y1, x2, y2) restricted zone
+    
+    Returns:
+        True if any overlap exists
+    '''
+    bbox_x1, bbox_y1, bbox_x2, bbox_y2 = bbox
+    rect_x1, rect_y1, rect_x2, rect_y2 = rect
+    
+    # No overlap if one rectangle is to the left/right/above/below the other
+    if bbox_x2 < rect_x1 or bbox_x1 > rect_x2:
+        return False
+    if bbox_y2 < rect_y1 or bbox_y1 > rect_y2:
+        return False
+    
+    return True
