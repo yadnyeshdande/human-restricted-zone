@@ -166,10 +166,13 @@ class MainWindow(QMainWindow):
         )
     
     def closeEvent(self, event) -> None:
-        """Handle window close."""
-        # Stop detection if running
-        if self.detection_page.is_running:
-            self.detection_page._stop_detection()
+        """Handle window close with proper cleanup sequence.
+        
+        CRITICAL: Proper shutdown order to prevent resource leaks and stuck hardware.
+        """
+        logger.info("=" * 80)
+        logger.info("APPLICATION SHUTDOWN INITIATED")
+        logger.info("=" * 80)
         
         # Ask for confirmation
         reply = QMessageBox.question(
@@ -181,15 +184,47 @@ class MainWindow(QMainWindow):
         )
         
         if reply == QMessageBox.Yes:
-            logger.info("Application closing...")
-            
-            # Save configuration
-            self.config_manager.save()
-            
-            # Shutdown camera manager
-            self.camera_manager.shutdown()
-            
-            event.accept()
+            try:
+                # STEP 1: Stop detection workers (uses cameras and relays)
+                logger.info("Step 1: Stopping detection workers...")
+                if self.detection_page.is_running:
+                    self.detection_page._stop_detection()
+                logger.info("  OK: Detection workers stopped")
+                
+                # STEP 2: Stop UI timers
+                logger.info("Step 2: Stopping UI timers...")
+                if hasattr(self.detection_page, 'cleanup'):
+                    self.detection_page.cleanup()
+                if hasattr(self.teaching_page, 'cleanup'):
+                    self.teaching_page.cleanup()
+                logger.info("  OK: UI timers stopped")
+                
+                # STEP 3: Shutdown relay manager (CRITICAL - deactivates hardware)
+                logger.info("Step 3: Shutting down relay manager...")
+                if hasattr(self.relay_manager, 'shutdown'):
+                    self.relay_manager.shutdown()
+                else:
+                    logger.warning("  WARNING: Relay manager has no shutdown method")
+                
+                # STEP 4: Stop all cameras
+                logger.info("Step 4: Stopping cameras...")
+                self.camera_manager.shutdown()
+                logger.info("  OK: Cameras stopped")
+                
+                # STEP 5: Save configuration
+                logger.info("Step 5: Saving configuration...")
+                self.config_manager.save()
+                logger.info("  OK: Configuration saved")
+                
+                logger.info("=" * 80)
+                logger.info("APPLICATION SHUTDOWN COMPLETE")
+                logger.info("=" * 80)
+                
+                event.accept()
+                
+            except Exception as e:
+                logger.critical(f"Error during shutdown: {e}", exc_info=True)
+                event.accept()  # Accept anyway to prevent hang
         else:
             event.ignore()
 

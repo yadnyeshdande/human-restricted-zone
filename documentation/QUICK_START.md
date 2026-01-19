@@ -123,6 +123,7 @@ rtsp://admin:password@192.168.1.100:554/cam/realmonitor?channel=1
 |----------|--------|
 | Ctrl+1 | Switch to Teaching Mode |
 | Ctrl+2 | Switch to Detection Mode |
+| Ctrl+3 | Settings |
 | Ctrl+S | Save Configuration |
 | Ctrl+Z | Undo zone edit |
 | Ctrl+Y | Redo zone edit |

@@ -69,6 +69,31 @@ class DetectionPage(QWidget):
         self._setup_ui()
         self._load_cameras()
     
+    def cleanup(self) -> None:
+        """Cleanup resources before shutdown.
+        
+        Stops the update timer. CRITICAL for preventing CPU spin.
+        """
+        logger.info("DetectionPage: Starting cleanup...")
+        
+        # Stop the update timer (CRITICAL - prevents CPU waste)
+        if hasattr(self, 'update_timer'):
+            try:
+                self.update_timer.stop()
+                logger.debug("  OK: Update timer stopped")
+            except Exception as e:
+                logger.warning(f"Error stopping timer: {e}")
+        
+        logger.info("  OK: DetectionPage cleanup complete")
+    
+    def __del__(self):
+        """Destructor for automatic cleanup."""
+        try:
+            if hasattr(self, 'update_timer'):
+                self.update_timer.stop()
+        except:
+            pass
+    
     def _setup_ui(self) -> None:
         """Setup UI components."""
         layout = QVBoxLayout(self)

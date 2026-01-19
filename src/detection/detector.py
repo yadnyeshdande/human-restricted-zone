@@ -17,21 +17,20 @@ class PersonDetector:
     PERSON_CLASS_ID = 0
     
     def __init__(self, model_name: str = None, conf_threshold: float = None):
+        """Initialize detector.
+        
+        Args:
+            model_name: YOLO model name (None = use app_settings)
+            conf_threshold: Confidence threshold (None = use app_settings)
+        """
         from config.app_settings import SETTINGS
         
         self.conf_threshold = conf_threshold or SETTINGS.detection_confidence
         model_name = model_name or SETTINGS.yolo_model
-        
-        logger.info(f"Initializing YOLO detector: {model_name}, confidence: {self.conf_threshold}")
-        """Initialize detector.
-        
-        Args:
-            model_name: YOLO model name
-            conf_threshold: Confidence threshold
-        """
-        self.conf_threshold = conf_threshold
         self.model = None
         self.device = 'cpu'
+        
+        logger.info(f"Initializing YOLO detector: {model_name}, confidence: {self.conf_threshold}")
         
         try:
             from ultralytics import YOLO

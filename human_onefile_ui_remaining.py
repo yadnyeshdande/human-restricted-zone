@@ -1,15 +1,169 @@
 # =============================================================================
+# CONSOLIDATED IMPORTS - All modules in one place
+# =============================================================================
+"""Multi-camera vision safety system - Consolidated module."""
+
+# Standard library imports
+import sys
+import os
+import json
+import queue
+import time
+import threading
+import logging
+import logging.handlers
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field, asdict
+from datetime import datetime
+from pathlib import Path
+from typing import (
+    Dict, Optional, Tuple, List, Callable, Any
+)
+
+# Third-party imports
+import cv2
+import numpy as np
+
+# PyQt5 imports - Consolidated
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QTabWidget, QMessageBox, QAction,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout, QGroupBox,
+    QPushButton, QLabel, QInputDialog, QScrollArea, QSizePolicy,
+    QSpinBox, QDoubleSpinBox, QComboBox, QCheckBox, QLineEdit
+)
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRect, QPoint
+from PyQt5.QtGui import (
+    QKeySequence, QColor, QImage, QPixmap, QPainter, QPen,
+    QBrush, QPaintEvent, QMouseEvent
+)
+
+# =============================================================================
+# INLINE UTILITIES - Consolidated for direct execution
+# =============================================================================
+
+# Logger singleton
+class SystemLogger:
+    """Thread-safe centralized logging system."""
+    _instance = None
+    _initialized = False
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+    
+    def __init__(self):
+        if not SystemLogger._initialized:
+            self._setup_logging()
+            SystemLogger._initialized = True
+    
+    def _setup_logging(self) -> None:
+        """Configure logging with rotating file handler."""
+        log_dir = Path("logs")
+        log_dir.mkdir(exist_ok=True)
+        
+        self.logger = logging.getLogger("VisionSafety")
+        self.logger.setLevel(logging.DEBUG)
+        
+        file_handler = logging.handlers.RotatingFileHandler(
+            log_dir / "vision_safety.log",
+            maxBytes=10 * 1024 * 1024,
+            backupCount=5
+        )
+        file_handler.setLevel(logging.DEBUG)
+        
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+        
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - [%(threadName)s] - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        file_handler.setFormatter(formatter)
+        console_handler.setFormatter(formatter)
+        
+        self.logger.addHandler(file_handler)
+        self.logger.addHandler(console_handler)
+    
+    def get_logger(self, name: str) -> logging.Logger:
+        return self.logger.getChild(name)
+
+
+def get_logger(name: str) -> logging.Logger:
+    """Get a logger instance."""
+    return SystemLogger().get_logger(name)
+
+
+# Stoppable thread class
+class StoppableThread(threading.Thread):
+    """Thread with graceful stop mechanism."""
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._stop_event = threading.Event()
+        self.daemon = True
+    
+    def stop(self) -> None:
+        self._stop_event.set()
+    
+    def stopped(self) -> bool:
+        return self._stop_event.is_set()
+    
+    def wait(self, timeout: Optional[float] = None) -> bool:
+        return self._stop_event.wait(timeout)
+
+
+# FPS Counter
+class FPSCounter:
+    """Calculate frames per second."""
+    
+    def __init__(self, window_size: int = 30):
+        self.window_size = window_size
+        self.frame_times = []
+    
+    def update(self) -> float:
+        current_time = time.time()
+        self.frame_times.append(current_time)
+        
+        if len(self.frame_times) > self.window_size:
+            self.frame_times.pop(0)
+        
+        if len(self.frame_times) < 2:
+            return 0.0
+        
+        elapsed = self.frame_times[-1] - self.frame_times[0]
+        return (len(self.frame_times) - 1) / elapsed if elapsed > 0 else 0.0
+
+
+def get_timestamp() -> str:
+    """Get ISO format timestamp."""
+    return datetime.now().isoformat()
+
+
+# Initialize all loggers at the top
+logger = get_logger("App")
+logger_cm = get_logger("CameraManager")
+logger_cw = get_logger("CameraWorker")
+logger_rp = get_logger("ReconnectPolicy")
+logger_cfg = get_logger("ConfigManager")
+logger_mig = get_logger("Migration")
+logger_det = get_logger("DetectionWorker")
+logger_detc = get_logger("Detector")
+logger_ri = get_logger("RelayInterface")
+logger_rm = get_logger("RelayManager")
+logger_rs = get_logger("RelaySimulator")
+logger_rh = get_logger("RelayUSBHID")
+logger_dp = get_logger("DetectionPage")
+logger_mw = get_logger("MainWindow")
+logger_sp = get_logger("SettingsPage")
+logger_tp = get_logger("TeachingPage")
+logger_vp = get_logger("VideoPanel")
+logger_ze = get_logger("ZoneEditor")
+
+# =============================================================================
 # File: camera/camera_manager.py
 # =============================================================================
 """Manage multiple camera workers."""
-
-import queue
-from typing import Dict, Optional, Tuple
-import numpy as np
-from utils.logger import get_logger
-from .camera_worker import CameraWorker
-
-logger = get_logger("CameraManager")
 
 
 class CameraManager:
@@ -102,7 +256,7 @@ class CameraManager:
     
     def shutdown(self) -> None:
         """Stop all cameras."""
-        logger.info("Shutting down all cameras")
+        logger_cm.info("Shutting down all cameras")
         for camera_id in list(self.workers.keys()):
             self.remove_camera(camera_id)
 
@@ -111,17 +265,7 @@ class CameraManager:
 # =============================================================================
 """RTSP camera capture worker."""
 
-import cv2
-import time
-import queue
-from typing import Optional, Tuple
-import numpy as np
-from utils.threading import StoppableThread
-from utils.logger import get_logger
-from utils.time_utils import FPSCounter
-from .reconnect_policy import ReconnectPolicy
-
-logger = get_logger("CameraWorker")
+logger_cw = get_logger("CameraWorker")
 
 
 class CameraWorker(StoppableThread):
@@ -240,11 +384,6 @@ class CameraWorker(StoppableThread):
 # =============================================================================
 """Reconnection policy with exponential backoff."""
 
-import time
-from utils.logger import get_logger
-
-logger = get_logger("ReconnectPolicy")
-
 
 class ReconnectPolicy:
     """Exponential backoff reconnection policy."""
@@ -288,15 +427,6 @@ class ReconnectPolicy:
 # ADDITIONAL FILE: config/app_settings.py (ADD THIS NEW FILE)
 # =============================================================================
 """Performance and detection settings - TWEAK THESE FOR YOUR NEEDS."""
-
-from dataclasses import dataclass
-from typing import Tuple, Optional
-from multiprocessing.util import get_logger
-from pathlib import Path
-from typing import Tuple
-
-from utils import logger
-from utils.time_utils import get_timestamp
 
 
 @dataclass
@@ -364,10 +494,8 @@ class AppSettings:
         '''Save settings to file.'''
         import json
         from pathlib import Path
-        from utils.time_utils import get_timestamp
-        from utils.logger import get_logger  # ADD THIS LINE
 
-        logger = get_logger("AppSettings")  # ADD THIS LINE (Remove logger.get_logger to only get_logger)
+        logger_appsettings = get_logger("AppSettings")
 
         settings_file = Path("app_settings.json")
         
@@ -395,9 +523,8 @@ class AppSettings:
         '''Load settings from file.'''
         import json
         from pathlib import Path
-        from utils.logger import get_logger  # ADD THIS LINE
     
-        logger = get_logger("AppSettings")  # ADD THIS LINE
+        logger_appsettings = get_logger("AppSettings")
         
         settings_file = Path("app_settings.json")
         
@@ -428,9 +555,7 @@ class AppSettings:
     
     def reset_to_defaults(self) -> None:
         '''Reset all settings to default values.'''
-        from utils.logger import get_logger  # ADD THIS LINE
-    
-        logger = get_logger("AppSettings")  # ADD THIS LINE
+        logger_appsettings = get_logger("AppSettings")
         
         self.processing_resolution = (1280, 720)
         self.yolo_model = "yolov8n.pt"
@@ -452,6 +577,88 @@ SETTINGS = AppSettings()
 
 
 # =============================================================================
+# File: config/schema.py
+# =============================================================================
+"""Data models and schemas."""
+
+from dataclasses import dataclass, field, asdict
+from typing import List, Tuple, Optional
+import json
+
+
+@dataclass
+class Zone:
+    """Restricted zone definition."""
+    id: int
+    rect: Tuple[int, int, int, int]  # (x1, y1, x2, y2) in processing resolution
+    relay_id: int
+    
+    def to_dict(self) -> dict:
+        return {
+            'id': self.id,
+            'rect': list(self.rect),
+            'relay_id': self.relay_id
+        }
+    
+    @classmethod
+    def from_dict(cls, data: dict) -> 'Zone':
+        return cls(
+            id=data['id'],
+            rect=tuple(data['rect']),
+            relay_id=data['relay_id']
+        )
+
+
+@dataclass
+class Camera:
+    """Camera configuration."""
+    id: int
+    rtsp_url: str
+    zones: List[Zone] = field(default_factory=list)
+    
+    def to_dict(self) -> dict:
+        return {
+            'id': self.id,
+            'rtsp_url': self.rtsp_url,
+            'zones': [z.to_dict() for z in self.zones]
+        }
+    
+    @classmethod
+    def from_dict(cls, data: dict) -> 'Camera':
+        return cls(
+            id=data['id'],
+            rtsp_url=data['rtsp_url'],
+            zones=[Zone.from_dict(z) for z in data.get('zones', [])]
+        )
+
+
+@dataclass
+class AppConfig:
+    """Application configuration."""
+    app_version: str = "1.0.0"
+    timestamp: str = ""
+    processing_resolution: Tuple[int, int] = (1280, 720)
+    cameras: List[Camera] = field(default_factory=list)
+    
+    def to_dict(self) -> dict:
+        return {
+            'app_version': self.app_version,
+            'timestamp': self.timestamp,
+            'processing_resolution': list(self.processing_resolution),
+            'cameras': [c.to_dict() for c in self.cameras]
+        }
+    
+    @classmethod
+    def from_dict(cls, data: dict) -> 'AppConfig':
+        return cls(
+            app_version=data.get('app_version', '1.0.0'),
+            timestamp=data.get('timestamp', ''),
+            processing_resolution=tuple(data.get('processing_resolution', [1280, 720])),
+            cameras=[Camera.from_dict(c) for c in data.get('cameras', [])]
+        )
+
+
+# =============================================================================
 # File: config/config_manager.py
 # =============================================================================
 """Configuration persistence and management."""
@@ -459,12 +666,6 @@ SETTINGS = AppSettings()
 import json
 from pathlib import Path
 from typing import Optional, List, Tuple
-from .schema import AppConfig, Camera, Zone
-from utils.logger import get_logger
-from utils.time_utils import get_timestamp
-
-
-logger = get_logger("ConfigManager")
 
 
 class ConfigManager:
@@ -481,7 +682,6 @@ class ConfigManager:
     
     def load(self) -> AppConfig:
         """Load configuration from file."""
-        from config.app_settings import SETTINGS
         
         if not self.config_path.exists():
             logger.info("Config file not found, creating new configuration")
@@ -604,7 +804,6 @@ class ConfigManager:
 """Configuration migration and backward compatibility."""
 
 from typing import Dict, Any
-from utils.logger import get_logger
 
 logger = get_logger("Migration")
 
@@ -623,87 +822,6 @@ def migrate_config(data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # =============================================================================
-# File: config/schema.py
-# =============================================================================
-"""Data models and schemas."""
-
-from dataclasses import dataclass, field, asdict
-from typing import List, Tuple, Optional
-import json
-
-
-@dataclass
-class Zone:
-    """Restricted zone definition."""
-    id: int
-    rect: Tuple[int, int, int, int]  # (x1, y1, x2, y2) in processing resolution
-    relay_id: int
-    
-    def to_dict(self) -> dict:
-        return {
-            'id': self.id,
-            'rect': list(self.rect),
-            'relay_id': self.relay_id
-        }
-    
-    @classmethod
-    def from_dict(cls, data: dict) -> 'Zone':
-        return cls(
-            id=data['id'],
-            rect=tuple(data['rect']),
-            relay_id=data['relay_id']
-        )
-
-
-@dataclass
-class Camera:
-    """Camera configuration."""
-    id: int
-    rtsp_url: str
-    zones: List[Zone] = field(default_factory=list)
-    
-    def to_dict(self) -> dict:
-        return {
-            'id': self.id,
-            'rtsp_url': self.rtsp_url,
-            'zones': [z.to_dict() for z in self.zones]
-        }
-    
-    @classmethod
-    def from_dict(cls, data: dict) -> 'Camera':
-        return cls(
-            id=data['id'],
-            rtsp_url=data['rtsp_url'],
-            zones=[Zone.from_dict(z) for z in data.get('zones', [])]
-        )
-
-
-@dataclass
-class AppConfig:
-    """Application configuration."""
-    app_version: str = "1.0.0"
-    timestamp: str = ""
-    processing_resolution: Tuple[int, int] = (1280, 720)
-    cameras: List[Camera] = field(default_factory=list)
-    
-    def to_dict(self) -> dict:
-        return {
-            'app_version': self.app_version,
-            'timestamp': self.timestamp,
-            'processing_resolution': list(self.processing_resolution),
-            'cameras': [c.to_dict() for c in self.cameras]
-        }
-    
-    @classmethod
-    def from_dict(cls, data: dict) -> 'AppConfig':
-        return cls(
-            app_version=data.get('app_version', '1.0.0'),
-            timestamp=data.get('timestamp', ''),
-            processing_resolution=tuple(data.get('processing_resolution', [1280, 720])),
-            cameras=[Camera.from_dict(c) for c in data.get('cameras', [])]
-        )
-
-# =============================================================================
 # File: detection/detection_worker.py
 # =============================================================================
 """Detection pipeline worker."""
@@ -712,11 +830,6 @@ import time
 import queue
 from typing import Optional, List, Tuple, Callable
 import numpy as np
-from utils.threading import StoppableThread
-from utils.logger import get_logger
-from utils.time_utils import FPSCounter
-from .detector import PersonDetector
-from .geometry import bbox_center, point_in_rect
 
 logger = get_logger("DetectionWorker")
 
@@ -770,9 +883,7 @@ class DetectionWorker(StoppableThread):
                 persons = self.detector.detect_persons(frame)
                 
                # Check violations
-                from config.app_settings import SETTINGS
-                from .geometry import bbox_overlaps_rect
-                
+                                
                 for bbox in persons:
                     for zone_id, rect, relay_id in self.zones:
                         violation = False
@@ -819,7 +930,6 @@ class DetectionWorker(StoppableThread):
 import cv2
 import numpy as np
 from typing import List, Tuple, Optional
-from utils.logger import get_logger
 
 logger = get_logger("Detector")
 
@@ -830,8 +940,6 @@ class PersonDetector:
     PERSON_CLASS_ID = 0
     
     def __init__(self, model_name: str = None, conf_threshold: float = None):
-        from config.app_settings import SETTINGS
-        
         self.conf_threshold = conf_threshold or SETTINGS.detection_confidence
         model_name = model_name or SETTINGS.yolo_model
         
@@ -969,7 +1077,6 @@ def bbox_overlaps_rect(bbox: Tuple[int, int, int, int], rect: Tuple[int, int, in
 """Hardware abstraction layer for relays."""
 
 from abc import ABC, abstractmethod
-from utils.logger import get_logger
 
 logger = get_logger("RelayInterface")
 
@@ -1023,11 +1130,8 @@ class RelayInterface(ABC):
 import time
 import threading
 from typing import Dict, Optional
-from .relay_interface import RelayInterface
-from .relay_simulator import RelaySimulator
-from utils.logger import get_logger
 
-logger = get_logger("RelayManager")
+logger_rm_mgr = get_logger("RelayManager")
 
 
 class RelayManager:
@@ -1052,6 +1156,7 @@ class RelayManager:
         
         self.last_activation: Dict[int, float] = {}
         self.lock = threading.Lock()
+        self.active_timers: Dict[int, threading.Timer] = {}  # Track pending deactivations
     
     def trigger(self, relay_id: int) -> bool:
         """Trigger a relay if cooldown has elapsed.
@@ -1074,30 +1179,65 @@ class RelayManager:
                 )
                 return False
             
+            # Cancel any pending timer for this relay
+            if relay_id in self.active_timers:
+                timer = self.active_timers[relay_id]
+                if timer.is_alive():
+                    timer.cancel()
+                del self.active_timers[relay_id]
+            
             # Activate relay
             success = self.interface.activate(relay_id, self.activation_duration)
             
             if success:
                 self.last_activation[relay_id] = current_time
                 
-                # Schedule deactivation
+                # Schedule deactivation with tracking
                 timer = threading.Timer(
                     self.activation_duration,
                     self._deactivate_relay,
                     args=(relay_id,)
                 )
                 timer.daemon = True
+                self.active_timers[relay_id] = timer
                 timer.start()
             
             return success
     
     def _deactivate_relay(self, relay_id: int) -> None:
         """Deactivate relay after duration."""
-        self.interface.deactivate(relay_id)
+        try:
+            self.interface.deactivate(relay_id)
+        except Exception as e:
+            logger.error(f"Error deactivating relay {relay_id}: {e}")
+        finally:
+            # Remove timer from tracking
+            with self.lock:
+                if relay_id in self.active_timers:
+                    del self.active_timers[relay_id]
     
     def get_state(self, relay_id: int) -> bool:
         """Get relay state."""
         return self.interface.get_state(relay_id)
+    
+    def shutdown(self) -> None:
+        """Shutdown relay manager - cancel all pending timers and deactivate all relays.
+        
+        CRITICAL: Call this before app exit to ensure relays are deactivated.
+        """
+        with self.lock:
+            # Cancel all pending timers
+            for relay_id, timer in list(self.active_timers.items()):
+                try:
+                    if timer.is_alive():
+                        timer.cancel()
+                        logger.info(f"Cancelled pending deactivation for relay {relay_id}")
+                except Exception as e:
+                    logger.warning(f"Error cancelling timer for relay {relay_id}: {e}")
+            
+            self.active_timers.clear()
+        
+        logger.info("Relay manager shutdown complete")
     
     def is_in_cooldown(self, relay_id: int) -> bool:
         """Check if relay is in cooldown period."""
@@ -1114,8 +1254,6 @@ class RelayManager:
 
 import time
 from typing import Dict
-from .relay_interface import RelayInterface
-from utils.logger import get_logger
 
 logger = get_logger("RelaySimulator")
 
@@ -1152,8 +1290,6 @@ class RelaySimulator(RelayInterface):
 
 import time
 from typing import Dict, Optional
-from .relay_interface import RelayInterface
-from utils.logger import get_logger
 
 logger = get_logger("RelayUSBHID")
 
@@ -1357,12 +1493,6 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QColor
-from config.config_manager import ConfigManager
-from camera.camera_manager import CameraManager
-from relay.relay_manager import RelayManager
-from detection.detection_worker import DetectionWorker
-from .video_panel import VideoPanel
-from utils.logger import get_logger
 
 logger = get_logger("DetectionPage")
 
@@ -1460,6 +1590,34 @@ class DetectionPage(QWidget):
         
         for camera in cameras:
             self._add_camera_panel(camera.id, camera.rtsp_url)
+    
+    def cleanup(self) -> None:
+        """Cleanup resources before shutdown - CRITICAL FOR 24/7 OPERATION.
+        
+        Stops the update timer and detection workers.
+        """
+        logger_dp.info("DetectionPage: Starting cleanup...")
+        
+        # Stop the update timer first (CRITICAL)
+        if hasattr(self, 'update_timer'):
+            try:
+                self.update_timer.stop()
+                logger_dp.info("  ✓ Update timer stopped")
+            except Exception as e:
+                logger_dp.warning(f"Error stopping timer: {e}")
+        
+        # Stop detection workers
+        if self.is_running:
+            self._stop_detection()
+        
+        logger_dp.info("  ✓ DetectionPage cleanup complete")
+    
+    def __del__(self):
+        """Destructor - ensure cleanup."""
+        try:
+            self.cleanup()
+        except:
+            pass
     
     def _add_camera_panel(self, camera_id: int, rtsp_url: str) -> None:
         """Add camera panel to grid."""
@@ -1689,13 +1847,6 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QKeySequence
-from config.config_manager import ConfigManager
-from camera.camera_manager import CameraManager
-from relay.relay_manager import RelayManager
-from .teaching_page import TeachingPage
-from .detection_page import DetectionPage
-from utils.logger import get_logger
-from .settings_page import SettingsPage
 
 logger = get_logger("MainWindow")
 
@@ -1845,32 +1996,68 @@ class MainWindow(QMainWindow):
         )
     
     def closeEvent(self, event) -> None:
-        """Handle window close."""
-        # Stop detection if running
-        if self.detection_page.is_running:
-            self.detection_page._stop_detection()
+        """Handle window close with proper cleanup sequence.
         
-        # Ask for confirmation
-        reply = QMessageBox.question(
-            self,
-            "Exit Application",
-            "Are you sure you want to exit?\n\nAll camera connections will be closed.",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
+        CRITICAL FOR 24/7 OPERATION:
+        1. Stop detection workers
+        2. Stop relay timers (shutdown relay manager)
+        3. Stop cameras
+        4. Save configuration
+        5. Accept close event
+        """
+        logger.info("=" * 80)
+        logger.info("APPLICATION SHUTDOWN INITIATED")
+        logger.info("=" * 80)
         
-        if reply == QMessageBox.Yes:
-            logger.info("Application closing...")
+        try:
+            # 1. Stop detection if running (MUST BE FIRST)
+            logger.info("Step 1: Stopping detection workers...")
+            if self.detection_page.is_running:
+                self.detection_page._stop_detection()
+                logger.info("  ✓ Detection workers stopped")
             
-            # Save configuration
-            self.config_manager.save()
+            # 2. Stop UI timers
+            logger.info("Step 2: Stopping UI update timers...")
+            try:
+                self.detection_page.cleanup()
+                logger.info("  ✓ UI timers stopped")
+            except Exception as e:
+                logger.warning(f"  ✗ Error stopping UI timers: {e}")
             
-            # Shutdown camera manager
-            self.camera_manager.shutdown()
+            # 3. Stop relay manager timers (CRITICAL - prevent stuck relays)
+            logger.info("Step 3: Shutting down relay manager...")
+            try:
+                if hasattr(self.relay_manager, 'shutdown'):
+                    self.relay_manager.shutdown()
+                    logger.info("  ✓ Relay timers cancelled, all relays deactivated")
+            except Exception as e:
+                logger.error(f"  ✗ Error shutting down relay manager: {e}")
+            
+            # 4. Stop all cameras
+            logger.info("Step 4: Stopping cameras...")
+            try:
+                self.camera_manager.shutdown()
+                logger.info("  ✓ All cameras stopped")
+            except Exception as e:
+                logger.error(f"  ✗ Error shutting down cameras: {e}")
+            
+            # 5. Save configuration
+            logger.info("Step 5: Saving configuration...")
+            try:
+                self.config_manager.save()
+                logger.info("  ✓ Configuration saved")
+            except Exception as e:
+                logger.error(f"  ✗ Error saving configuration: {e}")
+            
+            logger.info("=" * 80)
+            logger.info("APPLICATION SHUTDOWN COMPLETE")
+            logger.info("=" * 80)
             
             event.accept()
-        else:
-            event.ignore()
+            
+        except Exception as e:
+            logger.critical(f"Error during shutdown: {e}", exc_info=True)
+            event.accept()  # Accept anyway to prevent hang
 
 # =============================================================================
 # ADDITIONAL FILE: ui/settings_page.py (ADD THIS NEW FILE)
@@ -1883,9 +2070,6 @@ from PyQt5.QtWidgets import (
     QCheckBox, QMessageBox, QLineEdit, QScrollArea
 )
 from PyQt5.QtCore import Qt
-from config.app_settings import SETTINGS
-from relay.relay_manager import RelayManager
-from utils.logger import get_logger
 
 logger = get_logger("SettingsPage")
 
@@ -2325,11 +2509,6 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor
-from config.config_manager import ConfigManager
-from camera.camera_manager import CameraManager
-from .video_panel import VideoPanel
-from .zone_editor import ZoneEditor
-from utils.logger import get_logger
 
 logger = get_logger("TeachingPage")
 
@@ -2708,7 +2887,6 @@ from typing import Optional, Tuple
 from PyQt5.QtWidgets import QWidget, QLabel, QVBoxLayout, QHBoxLayout
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRect, QPoint
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QPen, QColor
-from utils.logger import get_logger
 
 logger = get_logger("VideoPanel")
 
@@ -2770,6 +2948,23 @@ class VideoPanel(QWidget):
         self.info_label.setAlignment(Qt.AlignCenter)
         self.info_label.setStyleSheet("color: #ffffff; font-size: 10px; padding: 2px;")
         layout.addWidget(self.info_label)
+    
+    def cleanup(self) -> None:
+        """Cleanup video panel resources."""
+        try:
+            # Clear frame data
+            self.current_frame = None
+            self.display_pixmap = None
+            logger_vp.debug(f"VideoPanel {self.camera_id} cleanup complete")
+        except Exception as e:
+            logger_vp.warning(f"Error during cleanup: {e}")
+    
+    def __del__(self):
+        """Destructor."""
+        try:
+            self.cleanup()
+        except:
+            pass
     
     def update_frame(self, frame: np.ndarray) -> None:
         """Update displayed frame.
@@ -2898,7 +3093,6 @@ from typing import Optional, List, Tuple
 from PyQt5.QtWidgets import QWidget
 from PyQt5.QtCore import Qt, QRect, QPoint, pyqtSignal
 from PyQt5.QtGui import QPainter, QPen, QColor, QBrush, QPaintEvent, QMouseEvent
-from utils.logger import get_logger
 
 logger = get_logger("ZoneEditor")
 
@@ -3256,163 +3450,8 @@ class ZoneEditor(QWidget):
 
 
 # =============================================================================
-# File: utils/logger.py
+# APPLICATION ENTRY POINT
 # =============================================================================
-"""Centralized logging with rotating file handler."""
-
-import logging
-import logging.handlers
-from pathlib import Path
-from typing import Optional
-
-
-class SystemLogger:
-    """Thread-safe centralized logging system."""
-    
-    _instance: Optional['SystemLogger'] = None
-    _initialized: bool = False
-    
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
-    
-    def __init__(self):
-        if not SystemLogger._initialized:
-            self._setup_logging()
-            SystemLogger._initialized = True
-    
-    def _setup_logging(self) -> None:
-        """Configure logging with rotating file handler."""
-        log_dir = Path("logs")
-        log_dir.mkdir(exist_ok=True)
-        
-        # Root logger
-        self.logger = logging.getLogger("VisionSafety")
-        self.logger.setLevel(logging.DEBUG)
-        
-        # Rotating file handler (10MB per file, keep 5 backups)
-        file_handler = logging.handlers.RotatingFileHandler(
-            log_dir / "vision_safety.log",
-            maxBytes=10 * 1024 * 1024,
-            backupCount=5
-        )
-        file_handler.setLevel(logging.DEBUG)
-        
-        # Console handler
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(logging.INFO)
-        
-        # Formatter
-        formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - [%(threadName)s] - %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
-        file_handler.setFormatter(formatter)
-        console_handler.setFormatter(formatter)
-        
-        self.logger.addHandler(file_handler)
-        self.logger.addHandler(console_handler)
-    
-    def get_logger(self, name: str) -> logging.Logger:
-        """Get a child logger."""
-        return self.logger.getChild(name)
-
-
-def get_logger(name: str) -> logging.Logger:
-    """Get a logger instance."""
-    return SystemLogger().get_logger(name)
-
-
-# =============================================================================
-# File: utils/threading.py
-# =============================================================================
-"""Thread utilities and helpers."""
-
-import threading
-from typing import Callable, Optional
-
-
-class StoppableThread(threading.Thread):
-    """Thread with graceful stop mechanism."""
-    
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._stop_event = threading.Event()
-        self.daemon = True
-    
-    def stop(self) -> None:
-        """Signal thread to stop."""
-        self._stop_event.set()
-    
-    def stopped(self) -> bool:
-        """Check if stop has been requested."""
-        return self._stop_event.is_set()
-    
-    def wait(self, timeout: Optional[float] = None) -> bool:
-        """Wait for stop signal."""
-        return self._stop_event.wait(timeout)
-    
-
-# =============================================================================
-# File: utils/time_utils.py
-# =============================================================================
-"""Time utilities."""
-
-import time
-from datetime import datetime
-from typing import Optional
-
-
-class FPSCounter:
-    """Calculate frames per second."""
-    
-    def __init__(self, window_size: int = 30):
-        self.window_size = window_size
-        self.frame_times = []
-        self.last_time = time.time()
-    
-    def update(self) -> float:
-        """Update FPS counter and return current FPS."""
-        current_time = time.time()
-        self.frame_times.append(current_time)
-        
-        # Keep only recent frames
-        if len(self.frame_times) > self.window_size:
-            self.frame_times.pop(0)
-        
-        if len(self.frame_times) < 2:
-            return 0.0
-        
-        elapsed = self.frame_times[-1] - self.frame_times[0]
-        if elapsed > 0:
-            return (len(self.frame_times) - 1) / elapsed
-        return 0.0
-
-
-def get_timestamp() -> str:
-    """Get ISO format timestamp."""
-    return datetime.now().isoformat()
-
-# =============================================================================
-# File: app.py - APPLICATION ENTRY POINT
-# =============================================================================
-
-import sys
-import os
-
-# Add src to path if running from project root
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
-
-from PyQt5.QtWidgets import QApplication
-from ui.main_window import MainWindow
-from utils.logger import get_logger
-from config.config_manager import ConfigManager
-from camera.camera_manager import CameraManager
-from relay.relay_manager import RelayManager
-
-logger = get_logger("Main")
-
 
 def main():
     """Application entry point."""
@@ -3423,7 +3462,7 @@ def main():
     try:
         app = QApplication(sys.argv)
         app.setApplicationName("Vision Safety System")
-        app.setStyle("Fusion")  # Modern style
+        app.setStyle("Fusion")
         
         # Initialize managers
         logger.info("Initializing configuration manager...")
@@ -3436,13 +3475,9 @@ def main():
         )
         
         logger.info("Initializing relay manager...")
-        from config.app_settings import SETTINGS
-        
-        # Choose relay interface based on settings
         relay_interface = None
         if SETTINGS.use_usb_relay:
             try:
-                from relay.relay_usb_hid import RelayUSBHID
                 relay_interface = RelayUSBHID(
                     num_channels=SETTINGS.usb_num_channels,
                     serial=SETTINGS.usb_serial
@@ -3471,7 +3506,6 @@ def main():
         logger.info("Application initialized successfully")
         logger.info("=" * 80)
         
-        # Run application
         sys.exit(app.exec_())
         
     except Exception as e:

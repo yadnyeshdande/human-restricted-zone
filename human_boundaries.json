@@ -1,30 +1,9 @@
 {
   "app_version": "1.0.0",
-  "timestamp": "2026-01-18T03:54:39.399663",
+  "timestamp": "2026-01-20T02:26:43.817116",
   "processing_resolution": [
     1280,
     720
   ],
-  "cameras": [
-    {
-      "id": 1,
-      "rtsp_url": "rtsp://admin:Pass_123@192.168.1.1:554/stream",
-      "zones": []
-    },
-    {
-      "id": 2,
-      "rtsp_url": "rtsp://admin:Pass_123@192.168.1.2:554/stream",
-      "zones": []
-    },
-    {
-      "id": 3,
-      "rtsp_url": "rtsp://admin:Pass_123@192.168.1.3:554/stream",
-      "zones": []
-    },
-    {
-      "id": 4,
-      "rtsp_url": "rtsp://admin:Pass_123@192.168.1.4:554/stream",
-      "zones": []
-    }
-  ]
+  "cameras": []
 }
