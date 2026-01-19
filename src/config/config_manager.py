@@ -145,3 +145,37 @@ class ConfigManager:
     def get_all_cameras(self) -> list:
         """Get all cameras."""
         return self.config.cameras if self.config else []
+
+    def update_processing_resolution(self, new_resolution: Tuple[int, int]) -> None:
+        """Update processing resolution and rescale all zone coordinates.
+        
+        Args:
+            new_resolution: New (width, height)
+        """
+        if self.config is None:
+            return
+        
+        old_resolution = self.config.processing_resolution
+        old_w, old_h = old_resolution
+        new_w, new_h = new_resolution
+        
+        # Calculate scaling factors
+        scale_x = new_w / old_w
+        scale_y = new_h / old_h
+        
+        # Rescale all zones
+        for camera in self.config.cameras:
+            for zone in camera.zones:
+                x1, y1, x2, y2 = zone.rect
+                zone.rect = (
+                    int(x1 * scale_x),
+                    int(y1 * scale_y),
+                    int(x2 * scale_x),
+                    int(y2 * scale_y)
+                )
+        
+        # Update resolution
+        self.config.processing_resolution = new_resolution
+        
+        logger.info(f"Resolution updated from {old_resolution} to {new_resolution}")
+        logger.info(f"All zone coordinates rescaled")

@@ -1,9 +1,74 @@
 {
   "app_version": "1.0.0",
-  "timestamp": "2026-01-20T02:26:43.817116",
+  "timestamp": "2026-01-20T03:48:11.096180",
   "processing_resolution": [
-    1280,
-    720
+    640,
+    360
   ],
-  "cameras": []
+  "cameras": [
+    {
+      "id": 1,
+      "rtsp_url": "rtsp://1",
+      "zones": [
+        {
+          "id": 7,
+          "rect": [
+            167,
+            22,
+            513,
+            188
+          ],
+          "relay_id": 7
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "rtsp_url": "rtsp://2",
+      "zones": [
+        {
+          "id": 8,
+          "rect": [
+            206,
+            17,
+            519,
+            178
+          ],
+          "relay_id": 8
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "rtsp_url": "rtsp://3",
+      "zones": [
+        {
+          "id": 9,
+          "rect": [
+            240,
+            18,
+            483,
+            182
+          ],
+          "relay_id": 9
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "rtsp_url": "rtsp://4",
+      "zones": [
+        {
+          "id": 10,
+          "rect": [
+            222,
+            11,
+            539,
+            178
+          ],
+          "relay_id": 10
+        }
+      ]
+    }
+  ]
 }

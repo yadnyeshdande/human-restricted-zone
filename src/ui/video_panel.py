@@ -127,6 +127,8 @@ class VideoPanel(QWidget):
         
         self.display_pixmap = scaled_pixmap
         self.video_label.setPixmap(scaled_pixmap)
+        # Notify parent to update zone editor if needed
+        self.update()  # ADD THIS LINE
     
     def set_zones(self, zones: list) -> None:
         """Set zones to display.

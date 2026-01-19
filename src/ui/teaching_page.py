@@ -17,6 +17,8 @@ from .video_panel import VideoPanel
 from .zone_editor import ZoneEditor
 from utils.logger import get_logger
 
+from ui import video_panel
+
 logger = get_logger("TeachingPage")
 
 
@@ -111,10 +113,14 @@ class TeachingPage(QWidget):
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        
+
         self.camera_grid_widget = QWidget()
         self.camera_grid = QGridLayout(self.camera_grid_widget)
         self.camera_grid.setSpacing(10)
+        self.camera_grid.setRowStretch(0, 1)  # Allow rows to expand
+        self.camera_grid.setRowStretch(1, 1)
+        self.camera_grid.setColumnStretch(0, 1)  # Allow columns to expand equally
+        self.camera_grid.setColumnStretch(1, 1)
         scroll_area.setWidget(self.camera_grid_widget)
         
         layout.addWidget(scroll_area)
@@ -181,17 +187,22 @@ class TeachingPage(QWidget):
         container_layout = QVBoxLayout(container)
         container_layout.setContentsMargins(0, 0, 0, 0)
         
-        # Create video panel
+        # Create video panel with proper aspect ratio
         video_panel = VideoPanel(
             camera_id=camera_id,
             processing_resolution=self.config_manager.config.processing_resolution
         )
         video_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        video_panel.setMinimumSize(400, 300)
+
+        # Calculate minimum size based on 16:9 aspect ratio
+        # Minimum width 480px means minimum height should be 480/16*9 = 270px
+        # But add extra for controls, so use 350px minimum height
+        video_panel.setMinimumSize(480, 350)
         
-        # Create zone editor overlay
-        zone_editor = ZoneEditor(video_panel)
-        zone_editor.setGeometry(video_panel.video_label.geometry())
+        # Create zone editor overlay - MUST be child of video_label, not video_panel
+        zone_editor = ZoneEditor(video_panel.video_label)
+        zone_editor.setGeometry(video_panel.video_label.rect())  # Use rect() not geometry()
+        zone_editor.raise_()  # Ensure it's on top
         zone_editor.zone_created.connect(
             lambda rect, cid=camera_id: self._on_zone_created(cid, rect)
         )
@@ -404,6 +415,8 @@ class TeachingPage(QWidget):
         for camera_id, video_panel in self.video_panels.items():
             if camera_id in self.zone_editors:
                 zone_editor = self.zone_editors[camera_id]
-                zone_editor.setGeometry(video_panel.video_label.geometry())
-
-
+                # Use the video_label's rect, not geometry (which includes position offset)
+                zone_editor.setGeometry(0, 0, 
+                                    video_panel.video_label.width(), 
+                                    video_panel.video_label.height())
+                

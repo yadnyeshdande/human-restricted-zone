@@ -127,6 +127,10 @@ class DetectionPage(QWidget):
         self.camera_grid_widget = QWidget()
         self.camera_grid = QGridLayout(self.camera_grid_widget)
         self.camera_grid.setSpacing(10)
+        self.camera_grid.setRowStretch(0, 1)  # ADD THESE LINES
+        self.camera_grid.setRowStretch(1, 1)
+        self.camera_grid.setColumnStretch(0, 1)
+        self.camera_grid.setColumnStretch(1, 1)
         scroll_area.setWidget(self.camera_grid_widget)
         
         layout.addWidget(scroll_area)
@@ -157,13 +161,13 @@ class DetectionPage(QWidget):
         container_layout = QVBoxLayout(container)
         container_layout.setContentsMargins(0, 0, 0, 0)
         
-        # Create video panel
+        # Create video panel with proper aspect ratio
         video_panel = VideoPanel(
             camera_id=camera_id,
             processing_resolution=self.config_manager.config.processing_resolution
         )
         video_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        video_panel.setMinimumSize(400, 300)
+        video_panel.setMinimumSize(480, 350)  # Changed from 400, 300
         
         container_layout.addWidget(video_panel)
         

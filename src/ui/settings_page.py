@@ -1,5 +1,5 @@
 # =============================================================================
-# ADDITIONAL FILE: ui/settings_page.py (ADD THIS NEW FILE)
+# File: ui/settings_page.py
 # =============================================================================
 """Settings page for application configuration."""
 
@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt
 from config.app_settings import SETTINGS
+from config.config_manager import ConfigManager
 from relay.relay_manager import RelayManager
 from utils.logger import get_logger
 
@@ -19,15 +20,17 @@ logger = get_logger("SettingsPage")
 class SettingsPage(QWidget):
     """Settings configuration interface."""
     
-    def __init__(self, relay_manager: RelayManager, parent=None):
+    def __init__(self, relay_manager: RelayManager, config_manager: ConfigManager, parent=None):
         """Initialize settings page.
         
         Args:
             relay_manager: Relay manager instance for testing
+            config_manager: Configuration manager for zone rescaling
             parent: Parent widget
         """
         super().__init__(parent)
         self.relay_manager = relay_manager
+        self.config_manager = config_manager  # Store for zone rescaling
         self.test_relay_index = 0
         
         self._setup_ui()
@@ -302,11 +305,17 @@ class SettingsPage(QWidget):
     def _save_settings(self) -> None:
         """Save settings to file."""
         try:
-            # Update SETTINGS object
-            SETTINGS.processing_resolution = (
+            # Check if resolution changed
+            old_resolution = SETTINGS.processing_resolution
+            new_resolution = (
                 self.resolution_width.value(),
                 self.resolution_height.value()
             )
+            
+            resolution_changed = old_resolution != new_resolution
+            
+            # Update SETTINGS object
+            SETTINGS.processing_resolution = new_resolution
             SETTINGS.yolo_model = self.yolo_model.currentData()
             SETTINGS.detection_confidence = self.confidence.value()
             SETTINGS.violation_mode = self.violation_mode.currentData()
@@ -321,21 +330,42 @@ class SettingsPage(QWidget):
             SETTINGS.frame_queue_size = self.frame_queue_size.value()
             SETTINGS.ui_update_fps = self.ui_fps.value()
             
-            # Save to file
+            # Save to app_settings.json
             SETTINGS.save()
+            
+            # ========================================
+            # SYNC: Update human_boundaries.json if resolution changed
+            # ========================================
+            if resolution_changed:
+                logger.info(f"Resolution changed: {old_resolution} → {new_resolution}")
+                self.config_manager.update_processing_resolution(new_resolution)
+                self.config_manager.save()
+                logger.info("✓ Zones rescaled and saved to human_boundaries.json")
             
             self.status_label.setText("Settings saved successfully!")
             self.status_label.setStyleSheet("color: green; font-weight: bold;")
             
-            QMessageBox.information(
-                self,
-                "Settings Saved",
-                "Settings saved successfully!\n\n"
-                "Note: Some settings require application restart to take effect:\n"
-                "- Processing resolution\n"
-                "- YOLO model\n"
-                "- USB relay configuration"
-            )
+            # Show appropriate message
+            if resolution_changed:
+                QMessageBox.information(
+                    self,
+                    "Settings Saved - Restart Required",
+                    "Settings saved successfully!\n\n"
+                    "⚠️ IMPORTANT: Please restart the application for these changes to take effect:\n"
+                    "- Processing resolution\n"
+                    "- YOLO model\n"
+                    "- USB relay configuration\n\n"
+                    "Zones have been automatically rescaled to the new resolution."
+                )
+            else:
+                QMessageBox.information(
+                    self,
+                    "Settings Saved",
+                    "Settings saved successfully!\n\n"
+                    "Note: Some settings require application restart to take effect:\n"
+                    "- YOLO model\n"
+                    "- USB relay configuration"
+                )
             
             logger.info("Settings saved successfully")
             

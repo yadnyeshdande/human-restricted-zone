@@ -17,6 +17,7 @@ from .teaching_page import TeachingPage
 from .detection_page import DetectionPage
 from utils.logger import get_logger
 from .settings_page import SettingsPage
+from config.app_settings import SETTINGS  # ← IMPORT AT TOP!
 
 logger = get_logger("MainWindow")
 
@@ -43,7 +44,7 @@ class MainWindow(QMainWindow):
         self.relay_manager = relay_manager
         
         self.setWindowTitle("Industrial Vision Safety System")
-        self.setMinimumSize(1280, 720)
+        self.setMinimumSize(1280, 800)
         
         self._setup_ui()
         self._setup_menu()
@@ -74,8 +75,9 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.detection_page, "Detection Mode")
         
         # Settings page
-        
-        self.settings_page = SettingsPage(self.relay_manager)
+        # Settings page
+        self.settings_page = SettingsPage(self.relay_manager, self.config_manager)  # Pass both
+        # self.settings_page = SettingsPage(self.relay_manager)
         self.tabs.addTab(self.settings_page, "Settings")
         
         self.setCentralWidget(self.tabs)

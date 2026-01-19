@@ -14,6 +14,7 @@ from utils.logger import get_logger
 from config.config_manager import ConfigManager
 from camera.camera_manager import CameraManager
 from relay.relay_manager import RelayManager
+from config.app_settings import SETTINGS  # ← IMPORT AT TOP!
 
 logger = get_logger("Main")
 
@@ -27,20 +28,53 @@ def main():
     try:
         app = QApplication(sys.argv)
         app.setApplicationName("Vision Safety System")
-        app.setStyle("Fusion")  # Modern style
+        app.setStyle("Fusion")
         
-        # Initialize managers
+        # ========================================
+        # CRITICAL: Load app settings FIRST
+        # ========================================
+        logger.info("Loading application settings...")
+        SETTINGS.load()  # This loads app_settings.json
+        
+        # ========================================
+        # Initialize configuration manager
+        # ========================================
         logger.info("Initializing configuration manager...")
         config_manager = ConfigManager()
-        config = config_manager.load()
+        config = config_manager.load()  # This loads human_boundaries.json
         
+        # ========================================
+        # SYNC CHECK: Detect resolution mismatch
+        # ========================================
+        app_resolution = SETTINGS.processing_resolution
+        config_resolution = config.processing_resolution
+        
+        if app_resolution != config_resolution:
+            logger.warning(f"Resolution mismatch detected!")
+            logger.warning(f"  App settings: {app_resolution}")
+            logger.warning(f"  Config file:  {config_resolution}")
+            logger.info(f"Rescaling zones to match app settings...")
+            
+            # Update config to match app settings and rescale zones
+            config_manager.update_processing_resolution(app_resolution)
+            config_manager.save()
+            
+            logger.info(f"✓ Zones rescaled and saved")
+        else:
+            logger.info(f"✓ Resolution in sync: {app_resolution}")
+        
+        # ========================================
+        # Initialize camera manager with SYNCED resolution
+        # ========================================
         logger.info("Initializing camera manager...")
         camera_manager = CameraManager(
-            processing_resolution=config.processing_resolution
+            processing_resolution=SETTINGS.processing_resolution  # Use app settings!
         )
         
+        # ========================================
+        # Initialize relay manager
+        # ========================================
         logger.info("Initializing relay manager...")
-        from config.app_settings import SETTINGS
         
         # Choose relay interface based on settings
         relay_interface = None
@@ -62,12 +96,16 @@ def main():
             activation_duration=SETTINGS.relay_duration
         )
         
+        # ========================================
         # Start cameras from configuration
+        # ========================================
         for camera in config.cameras:
             logger.info(f"Starting camera {camera.id}: {camera.rtsp_url}")
             camera_manager.add_camera(camera.id, camera.rtsp_url)
         
+        # ========================================
         # Create and show main window
+        # ========================================
         logger.info("Creating main window...")
         window = MainWindow(config_manager, camera_manager, relay_manager)
         window.show()
