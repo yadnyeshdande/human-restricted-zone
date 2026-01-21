@@ -44,9 +44,17 @@ class DetectionWorker(StoppableThread):
         
         try:
             self.detector = PersonDetector()
-            logger.info(f"Detection worker initialized for camera {camera_id}")
+            
+            # Check if model loaded successfully
+            if not self.detector.is_model_loaded():
+                logger.error(f"[ERROR] CRITICAL: Model failed to load for camera {camera_id}")
+                logger.error("Detection will not work properly")
+                logger.error("Please check that YOLO model is available in models/ folder")
+            else:
+                logger.info(f"[OK] Detection worker initialized for camera {camera_id}")
         except Exception as e:
             logger.error(f"Failed to initialize detector: {e}")
+            logger.error("[ERROR] CRITICAL: Cannot start detection without model")
             raise
     
     def run(self) -> None:

@@ -37,6 +37,35 @@ def main():
         SETTINGS.load()  # This loads app_settings.json
         
         # ========================================
+        # VALIDATE: Check if YOLO model exists
+        # ========================================
+        from pathlib import Path
+        models_dir = Path(__file__).parent.parent / "models"
+        models_dir.mkdir(parents=True, exist_ok=True)
+        model_file = models_dir / SETTINGS.yolo_model
+        
+        if not model_file.exists():
+            logger.warning("=" * 80)
+            logger.warning("[WARNING] YOLO MODEL NOT FOUND")
+            logger.warning("=" * 80)
+            logger.warning(f"Expected model: {SETTINGS.yolo_model}")
+            logger.warning(f"Expected location: {model_file}")
+            logger.warning("")
+            logger.warning("SOLUTION:")
+            logger.warning("1. Open Settings in the application")
+            logger.warning("2. Go to 'Detection Settings'")
+            logger.warning("3. Click 'Check & Download' next to YOLO Model")
+            logger.warning("4. Select your desired model and download it")
+            logger.warning("5. Restart the application")
+            logger.warning("")
+            logger.warning("The application will attempt to auto-download on first run,")
+            logger.warning("but it's recommended to pre-download models to models/ folder.")
+            logger.warning("=" * 80)
+        else:
+            size_mb = model_file.stat().st_size / (1024 * 1024)
+            logger.info(f"[OK] YOLO Model found: {SETTINGS.yolo_model} ({size_mb:.1f} MB)")
+        
+        # ========================================
         # Initialize configuration manager
         # ========================================
         logger.info("Initializing configuration manager...")

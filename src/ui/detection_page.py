@@ -219,39 +219,102 @@ class DetectionPage(QWidget):
         
         logger.info("Starting detection...")
         
-        cameras = self.config_manager.get_all_cameras()
+        # Show progress dialog
+        from PyQt5.QtWidgets import QProgressDialog, QMessageBox
+        from PyQt5.QtCore import Qt as QtCore
         
-        for camera in cameras:
-            # Get frame queue from camera manager
-            frame_queue = self.camera_manager.get_frame_queue(camera.id)
-            if not frame_queue:
-                logger.warning(f"No frame queue for camera {camera.id}")
-                continue
+        progress = QProgressDialog(
+            "Initializing detection system...\n\nLoading YOLO model...",
+            None,
+            0,
+            0
+        )
+        progress.setWindowTitle("Starting Detection")
+        progress.setWindowModality(QtCore.WindowModal)
+        progress.setCancelButton(None)
+        progress.show()
+        
+        try:
+            cameras = self.config_manager.get_all_cameras()
             
-            # Prepare zones data (now with points instead of rect)
-            zones_data = [
-                (zone.id, zone.points, zone.relay_id)
-                for zone in camera.zones
-            ]
+            for idx, camera in enumerate(cameras):
+                progress.setLabelText(
+                    f"Initializing detection system...\n\n"
+                    f"Loading YOLO model for camera {camera.id}..."
+                )
+                progress.repaint()
+                
+                # Get frame queue from camera manager
+                frame_queue = self.camera_manager.get_frame_queue(camera.id)
+                if not frame_queue:
+                    logger.warning(f"No frame queue for camera {camera.id}")
+                    continue
+                
+                # Prepare zones data (now with points instead of rect)
+                zones_data = [
+                    (zone.id, zone.points, zone.relay_id)
+                    for zone in camera.zones
+                ]
+                
+                # Create detection worker
+                try:
+                    worker = DetectionWorker(
+                        camera_id=camera.id,
+                        frame_queue=frame_queue,
+                        zones=zones_data,
+                        on_violation=self._handle_violation
+                    )
+                    
+                    # Check if model loaded successfully
+                    if not worker.detector.is_model_loaded():
+                        progress.close()
+                        QMessageBox.critical(
+                            self,
+                            "Model Load Failed",
+                            f"Failed to load YOLO model for camera {camera.id}.\n\n"
+                            f"Please check:\n"
+                            f"1. Model file exists in models/ folder\n"
+                            f"2. Go to Settings → Detection Settings\n"
+                            f"3. Click 'Check & Download' to download the model\n"
+                            f"4. Restart the application\n\n"
+                            f"Check logs for more details."
+                        )
+                        logger.error(f"Model load failed for camera {camera.id}")
+                        return
+                    
+                    self.detection_workers[camera.id] = worker
+                    worker.start()
+                    
+                    logger.info(f"[OK] Detection started for camera {camera.id}")
+                    
+                except Exception as e:
+                    progress.close()
+                    logger.error(f"Failed to start detection for camera {camera.id}: {e}")
+                    QMessageBox.critical(
+                        self,
+                        "Detection Startup Error",
+                        f"Failed to start detection for camera {camera.id}:\n{e}\n\n"
+                        f"Check logs for details."
+                    )
+                    return
             
-            # Create detection worker
-            worker = DetectionWorker(
-                camera_id=camera.id,
-                frame_queue=frame_queue,
-                zones=zones_data,
-                on_violation=self._handle_violation
+            progress.close()
+            
+            self.is_running = True
+            self.start_btn.setEnabled(False)
+            self.stop_btn.setEnabled(True)
+            self.status_label.setText("[OK] Detection Running")
+            self.status_label.setStyleSheet("font-weight: bold; color: green;")
+            logger.info("[OK] Detection system fully initialized")
+            
+        except Exception as e:
+            progress.close()
+            logger.error(f"Failed to start detection: {e}")
+            QMessageBox.critical(
+                self,
+                "Detection Error",
+                f"Failed to start detection:\n{e}"
             )
-            
-            self.detection_workers[camera.id] = worker
-            worker.start()
-            
-            logger.info(f"Detection started for camera {camera.id}")
-        
-        self.is_running = True
-        self.start_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
-        self.status_label.setText("Detection Running")
-        self.status_label.setStyleSheet("font-weight: bold; color: green;")
     
     def _stop_detection(self) -> None:
         """Stop detection on all cameras."""

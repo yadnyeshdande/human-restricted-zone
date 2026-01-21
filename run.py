@@ -14,5 +14,5 @@ if __name__ == "__main__":
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
     
     # Execute the consolidated application
-    import human_onefile_ui_remaining
-    human_onefile_ui_remaining.main()
+    import human_onefile_polygon_ui_remaining
+    human_onefile_polygon_ui_remaining.main()

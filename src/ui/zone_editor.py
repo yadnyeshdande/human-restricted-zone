@@ -36,6 +36,7 @@ class ZoneEditor(QWidget):
         
         # Drawing
         self.current_points: List[Tuple[int, int]] = []  # Points being drawn
+        self.mouse_pos: Optional[QPoint] = None  # Current mouse position for line preview
         
         # Moving
         self.move_offset: Optional[QPoint] = None
@@ -191,6 +192,12 @@ class ZoneEditor(QWidget):
                 p2 = QPoint(int(self.current_points[i + 1][0]), int(self.current_points[i + 1][1]))
                 painter.drawLine(p1, p2)
             
+            # Draw preview line from last point to current mouse position
+            if self.mouse_pos is not None and len(self.current_points) > 0:
+                last_point = QPoint(int(self.current_points[-1][0]), int(self.current_points[-1][1]))
+                painter.setPen(QPen(self.drawing_color, 1, Qt.DashLine))
+                painter.drawLine(last_point, self.mouse_pos)
+            
             # Draw points
             for px, py in self.current_points:
                 painter.setBrush(QBrush(self.drawing_color))
@@ -277,6 +284,12 @@ class ZoneEditor(QWidget):
         """Handle mouse move."""
         pos = event.pos()
         
+        # Update mouse position for preview line during drawing
+        if self.state == self.STATE_DRAWING:
+            self.mouse_pos = pos
+            self.update()
+            return
+        
         if self.state == self.STATE_MOVING_ZONE and self.selected_zone_id is not None:
             zone_points = self._get_zone_points(self.selected_zone_id)
             if zone_points and self.move_offset:
@@ -333,6 +346,7 @@ class ZoneEditor(QWidget):
             self.zone_created.emit(self.current_points)
         
         self.current_points = []
+        self.mouse_pos = None
         self.state = self.STATE_IDLE
         self.update()
     
