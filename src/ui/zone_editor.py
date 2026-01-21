@@ -1,31 +1,28 @@
-
+# ============================================================================
+"""Polygon zone drawing and editing widget."""
 # =============================================================================
-# File: ui/zone_editor.py
-# =============================================================================
-"""Zone drawing and editing widget."""
-
 from typing import Optional, List, Tuple
 from PyQt5.QtWidgets import QWidget
-from PyQt5.QtCore import Qt, QRect, QPoint, pyqtSignal
-from PyQt5.QtGui import QPainter, QPen, QColor, QBrush, QPaintEvent, QMouseEvent
+from PyQt5.QtCore import Qt, QPoint, pyqtSignal
+from PyQt5.QtGui import QPainter, QPen, QColor, QBrush, QPaintEvent, QMouseEvent, QPolygon
 from utils.logger import get_logger
 
 logger = get_logger("ZoneEditor")
 
 
 class ZoneEditor(QWidget):
-    """Interactive zone drawing and editing overlay."""
+    """Interactive polygon zone drawing and editing overlay."""
     
     # Signals
-    zone_created = pyqtSignal(tuple)  # (x1, y1, x2, y2)
-    zone_modified = pyqtSignal(int, tuple)  # zone_id, (x1, y1, x2, y2)
+    zone_created = pyqtSignal(list)  # List of (x, y) points
+    zone_modified = pyqtSignal(int, list)  # zone_id, List of (x, y) points
     zone_selected = pyqtSignal(int)  # zone_id
     
     # States
     STATE_IDLE = 0
     STATE_DRAWING = 1
-    STATE_MOVING = 2
-    STATE_RESIZING = 3
+    STATE_MOVING_ZONE = 2
+    STATE_MOVING_POINT = 3
     
     def __init__(self, parent=None):
         """Initialize zone editor."""
@@ -33,25 +30,26 @@ class ZoneEditor(QWidget):
         
         # State
         self.state = self.STATE_IDLE
-        self.zones: List[Tuple[int, QRect, QColor]] = []  # (id, rect, color)
+        self.zones: List[Tuple[int, List[Tuple[int, int]], QColor]] = []  # (id, points, color)
         self.selected_zone_id: Optional[int] = None
-        self.resize_handle: Optional[str] = None  # 'tl', 'tr', 'bl', 'br'
+        self.selected_point_index: Optional[int] = None
         
         # Drawing
-        self.draw_start: Optional[QPoint] = None
-        self.draw_current: Optional[QPoint] = None
+        self.current_points: List[Tuple[int, int]] = []  # Points being drawn
         
         # Moving
         self.move_offset: Optional[QPoint] = None
         
         # Undo/Redo
-        self.history: List[List[Tuple[int, QRect, QColor]]] = []
+        self.history: List[List[Tuple[int, List[Tuple[int, int]], QColor]]] = []
         self.history_index = -1
         
         # Configuration
-        self.handle_size = 8
+        self.point_radius = 6  # Radius for point handles
+        self.click_threshold = 15  # Distance to close polygon
         self.default_color = QColor(0, 255, 0)
         self.selected_color = QColor(255, 255, 0)
+        self.drawing_color = QColor(255, 128, 0)
         
         # Enable mouse tracking
         self.setMouseTracking(True)
@@ -61,31 +59,27 @@ class ZoneEditor(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setStyleSheet("background: transparent;")
     
-    def set_zones(self, zones: List[Tuple[int, Tuple[int, int, int, int], QColor]]) -> None:
+    def set_zones(self, zones: List[Tuple[int, List[Tuple[int, int]], QColor]]) -> None:
         """Set zones to display and edit.
         
         Args:
-            zones: List of (zone_id, (x1, y1, x2, y2), color)
+            zones: List of (zone_id, points, color)
         """
-        self.zones = [
-            (zone_id, QRect(x1, y1, x2 - x1, y2 - y1), color)
-            for zone_id, (x1, y1, x2, y2), color in zones
-        ]
+        self.zones = [(zone_id, list(points), color) for zone_id, points, color in zones]
         self._save_history()
         self.update()
     
-    def add_zone(self, zone_id: int, rect: Tuple[int, int, int, int], color: QColor = None) -> None:
+    def add_zone(self, zone_id: int, points: List[Tuple[int, int]], color: QColor = None) -> None:
         """Add a zone.
         
         Args:
             zone_id: Zone identifier
-            rect: (x1, y1, x2, y2)
+            points: List of (x, y) points
             color: Zone color
         """
-        x1, y1, x2, y2 = rect
         self.zones.append((
             zone_id,
-            QRect(x1, y1, x2 - x1, y2 - y1),
+            list(points),
             color or self.default_color
         ))
         self._save_history()
@@ -106,26 +100,23 @@ class ZoneEditor(QWidget):
         self._save_history()
         self.update()
     
-    def get_zones(self) -> List[Tuple[int, Tuple[int, int, int, int]]]:
+    def get_zones(self) -> List[Tuple[int, List[Tuple[int, int]]]]:
         """Get all zones.
         
         Returns:
-            List of (zone_id, (x1, y1, x2, y2))
+            List of (zone_id, points)
         """
-        return [
-            (zone_id, (rect.x(), rect.y(), rect.right(), rect.bottom()))
-            for zone_id, rect, _ in self.zones
-        ]
+        return [(zone_id, list(points)) for zone_id, points, _ in self.zones]
     
     def _save_history(self) -> None:
         """Save current state to history."""
         # Remove any redo history
         self.history = self.history[:self.history_index + 1]
         
-        # Save current state
+        # Save current state (deep copy)
         self.history.append([
-            (zid, QRect(rect), QColor(color))
-            for zid, rect, color in self.zones
+            (zid, list(points), QColor(color))
+            for zid, points, color in self.zones
         ])
         self.history_index = len(self.history) - 1
         
@@ -139,8 +130,8 @@ class ZoneEditor(QWidget):
         if self.history_index > 0:
             self.history_index -= 1
             self.zones = [
-                (zid, QRect(rect), QColor(color))
-                for zid, rect, color in self.history[self.history_index]
+                (zid, list(points), QColor(color))
+                for zid, points, color in self.history[self.history_index]
             ]
             self.update()
             return True
@@ -151,8 +142,8 @@ class ZoneEditor(QWidget):
         if self.history_index < len(self.history) - 1:
             self.history_index += 1
             self.zones = [
-                (zid, QRect(rect), QColor(color))
-                for zid, rect, color in self.history[self.history_index]
+                (zid, list(points), QColor(color))
+                for zid, points, color in self.history[self.history_index]
             ]
             self.update()
             return True
@@ -164,143 +155,184 @@ class ZoneEditor(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
         
         # Draw existing zones
-        for zone_id, rect, color in self.zones:
+        for zone_id, points, color in self.zones:
+            if len(points) < 2:
+                continue
+            
             is_selected = (zone_id == self.selected_zone_id)
             
-            # Draw rectangle
+            # Draw polygon
             pen_width = 3 if is_selected else 2
             pen_color = self.selected_color if is_selected else color
             painter.setPen(QPen(pen_color, pen_width))
             painter.setBrush(QBrush(QColor(pen_color.red(), pen_color.green(), pen_color.blue(), 30)))
-            painter.drawRect(rect)
             
-            # Draw zone label
-            painter.setPen(QPen(pen_color, 1))
-            painter.drawText(rect.x() + 5, rect.y() + 15, f"Zone {zone_id}")
+            # Create QPolygon for drawing
+            qpoly = QPolygon([QPoint(int(x), int(y)) for x, y in points])
+            painter.drawPolygon(qpoly)
             
-            # Draw resize handles for selected zone
+            # Draw zone label at first point
+            if points:
+                painter.setPen(QPen(pen_color, 1))
+                painter.drawText(int(points[0][0]) + 5, int(points[0][1]) - 5, f"Zone {zone_id}")
+            
+            # Draw point handles for selected zone
             if is_selected:
-                self._draw_handles(painter, rect)
+                self._draw_point_handles(painter, points, pen_color)
         
-        # Draw current drawing
-        if self.state == self.STATE_DRAWING and self.draw_start and self.draw_current:
-            painter.setPen(QPen(self.default_color, 2, Qt.DashLine))
+        # Draw current drawing polygon
+        if self.state == self.STATE_DRAWING and len(self.current_points) > 0:
+            painter.setPen(QPen(self.drawing_color, 2, Qt.DashLine))
             painter.setBrush(Qt.NoBrush)
-            rect = QRect(self.draw_start, self.draw_current).normalized()
-            painter.drawRect(rect)
+            
+            # Draw lines between points
+            for i in range(len(self.current_points) - 1):
+                p1 = QPoint(int(self.current_points[i][0]), int(self.current_points[i][1]))
+                p2 = QPoint(int(self.current_points[i + 1][0]), int(self.current_points[i + 1][1]))
+                painter.drawLine(p1, p2)
+            
+            # Draw points
+            for px, py in self.current_points:
+                painter.setBrush(QBrush(self.drawing_color))
+                painter.drawEllipse(QPoint(int(px), int(py)), self.point_radius, self.point_radius)
+            
+            # Draw instruction
+            if len(self.current_points) >= 3:
+                painter.setPen(QPen(QColor(255, 255, 255), 1))
+                painter.drawText(10, 30, "Click near first point to close polygon, or Right-click to finish")
     
-    def _draw_handles(self, painter: QPainter, rect: QRect) -> None:
-        """Draw resize handles."""
-        handle_color = self.selected_color
-        painter.setBrush(QBrush(handle_color))
-        painter.setPen(QPen(Qt.white, 1))
+    def _draw_point_handles(self, painter: QPainter, points: List[Tuple[int, int]], color: QColor) -> None:
+        """Draw handles for polygon points."""
+        painter.setBrush(QBrush(color))
+        painter.setPen(QPen(Qt.white, 2))
         
-        handles = [
-            rect.topLeft(),
-            rect.topRight(),
-            rect.bottomLeft(),
-            rect.bottomRight()
-        ]
-        
-        for handle_pos in handles:
-            handle_rect = QRect(
-                handle_pos.x() - self.handle_size // 2,
-                handle_pos.y() - self.handle_size // 2,
-                self.handle_size,
-                self.handle_size
-            )
-            painter.drawRect(handle_rect)
+        for px, py in points:
+            painter.drawEllipse(QPoint(int(px), int(py)), self.point_radius, self.point_radius)
     
     def mousePressEvent(self, event: QMouseEvent) -> None:
         """Handle mouse press."""
-        if event.button() != Qt.LeftButton:
-            return
-        
         pos = event.pos()
         
-        # Check if clicking on resize handle
-        if self.selected_zone_id is not None:
-            selected_rect = self._get_zone_rect(self.selected_zone_id)
-            if selected_rect:
-                handle = self._get_handle_at(pos, selected_rect)
-                if handle:
-                    self.state = self.STATE_RESIZING
-                    self.resize_handle = handle
+        if event.button() == Qt.LeftButton:
+            if self.state == self.STATE_IDLE:
+                # Check if clicking on point of selected zone
+                if self.selected_zone_id is not None:
+                    point_index = self._get_point_at(pos, self.selected_zone_id)
+                    if point_index is not None:
+                        self.state = self.STATE_MOVING_POINT
+                        self.selected_point_index = point_index
+                        return
+                
+                # Check if clicking inside existing zone
+                clicked_zone = self._get_zone_at(pos)
+                if clicked_zone is not None:
+                    self.selected_zone_id = clicked_zone
+                    self.zone_selected.emit(clicked_zone)
+                    self.state = self.STATE_MOVING_ZONE
+                    
+                    # Calculate offset from first point
+                    zone_points = self._get_zone_points(clicked_zone)
+                    if zone_points and len(zone_points) > 0:
+                        first_point = zone_points[0]
+                        self.move_offset = QPoint(
+                            pos.x() - int(first_point[0]),
+                            pos.y() - int(first_point[1])
+                        )
+                    self.update()
                     return
+                
+                # Start drawing new zone
+                self.selected_zone_id = None
+                self.state = self.STATE_DRAWING
+                self.current_points = [(pos.x(), pos.y())]
+                self.update()
+            
+            elif self.state == self.STATE_DRAWING:
+                # Check if closing polygon (click near first point)
+                if len(self.current_points) >= 3:
+                    first_point = self.current_points[0]
+                    dist = ((pos.x() - first_point[0])**2 + (pos.y() - first_point[1])**2)**0.5
+                    
+                    if dist < self.click_threshold:
+                        # Close polygon
+                        self._finish_polygon()
+                        return
+                
+                # Add point to current polygon
+                self.current_points.append((pos.x(), pos.y()))
+                self.update()
         
-        # Check if clicking on existing zone
-        clicked_zone = self._get_zone_at(pos)
-        if clicked_zone is not None:
-            self.selected_zone_id = clicked_zone
-            self.zone_selected.emit(clicked_zone)
-            self.state = self.STATE_MOVING
-            selected_rect = self._get_zone_rect(clicked_zone)
-            if selected_rect:
-                self.move_offset = pos - selected_rect.topLeft()
-            self.update()
-            return
-        
-        # Start drawing new zone
-        self.selected_zone_id = None
-        self.state = self.STATE_DRAWING
-        self.draw_start = pos
-        self.draw_current = pos
-        self.update()
+        elif event.button() == Qt.RightButton:
+            if self.state == self.STATE_DRAWING:
+                # Finish polygon without closing
+                if len(self.current_points) >= 3:
+                    self._finish_polygon()
+                else:
+                    # Cancel drawing
+                    self.current_points = []
+                    self.state = self.STATE_IDLE
+                    self.update()
     
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         """Handle mouse move."""
         pos = event.pos()
         
-        if self.state == self.STATE_DRAWING:
-            self.draw_current = pos
-            self.update()
-        
-        elif self.state == self.STATE_MOVING and self.selected_zone_id is not None:
-            selected_rect = self._get_zone_rect(self.selected_zone_id)
-            if selected_rect and self.move_offset:
-                new_pos = pos - self.move_offset
-                selected_rect.moveTo(new_pos)
+        if self.state == self.STATE_MOVING_ZONE and self.selected_zone_id is not None:
+            zone_points = self._get_zone_points(self.selected_zone_id)
+            if zone_points and self.move_offset:
+                # Calculate new position
+                new_x = pos.x() - self.move_offset.x()
+                new_y = pos.y() - self.move_offset.y()
+                
+                # Calculate offset from original position
+                if len(zone_points) > 0:
+                    offset_x = new_x - zone_points[0][0]
+                    offset_y = new_y - zone_points[0][1]
+                    
+                    # Move all points
+                    for i in range(len(zone_points)):
+                        zone_points[i] = (
+                            zone_points[i][0] + offset_x,
+                            zone_points[i][1] + offset_y
+                        )
+                
                 self.update()
         
-        elif self.state == self.STATE_RESIZING and self.selected_zone_id is not None:
-            selected_rect = self._get_zone_rect(self.selected_zone_id)
-            if selected_rect and self.resize_handle:
-                self._resize_rect(selected_rect, pos, self.resize_handle)
-                self.update()
+        elif self.state == self.STATE_MOVING_POINT and self.selected_zone_id is not None:
+            zone_points = self._get_zone_points(self.selected_zone_id)
+            if zone_points and self.selected_point_index is not None:
+                if 0 <= self.selected_point_index < len(zone_points):
+                    zone_points[self.selected_point_index] = (pos.x(), pos.y())
+                    self.update()
     
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         """Handle mouse release."""
         if event.button() != Qt.LeftButton:
             return
         
-        if self.state == self.STATE_DRAWING:
-            if self.draw_start and self.draw_current:
-                rect = QRect(self.draw_start, self.draw_current).normalized()
-                if rect.width() > 10 and rect.height() > 10:
-                    self.zone_created.emit((
-                        rect.x(), rect.y(), rect.right(), rect.bottom()
-                    ))
-            self.draw_start = None
-            self.draw_current = None
-        
-        elif self.state == self.STATE_MOVING and self.selected_zone_id is not None:
-            selected_rect = self._get_zone_rect(self.selected_zone_id)
-            if selected_rect:
-                self.zone_modified.emit(
-                    self.selected_zone_id,
-                    (selected_rect.x(), selected_rect.y(), selected_rect.right(), selected_rect.bottom())
-                )
+        if self.state == self.STATE_MOVING_ZONE and self.selected_zone_id is not None:
+            zone_points = self._get_zone_points(self.selected_zone_id)
+            if zone_points:
+                self.zone_modified.emit(self.selected_zone_id, zone_points)
                 self._save_history()
         
-        elif self.state == self.STATE_RESIZING and self.selected_zone_id is not None:
-            selected_rect = self._get_zone_rect(self.selected_zone_id)
-            if selected_rect:
-                self.zone_modified.emit(
-                    self.selected_zone_id,
-                    (selected_rect.x(), selected_rect.y(), selected_rect.right(), selected_rect.bottom())
-                )
+        elif self.state == self.STATE_MOVING_POINT and self.selected_zone_id is not None:
+            zone_points = self._get_zone_points(self.selected_zone_id)
+            if zone_points:
+                self.zone_modified.emit(self.selected_zone_id, zone_points)
                 self._save_history()
         
+        if self.state != self.STATE_DRAWING:
+            self.state = self.STATE_IDLE
+        
+        self.update()
+    
+    def _finish_polygon(self) -> None:
+        """Finish drawing current polygon."""
+        if len(self.current_points) >= 3:
+            self.zone_created.emit(self.current_points)
+        
+        self.current_points = []
         self.state = self.STATE_IDLE
         self.update()
     
@@ -308,58 +340,65 @@ class ZoneEditor(QWidget):
         """Handle key press."""
         if event.key() == Qt.Key_Delete and self.selected_zone_id is not None:
             self.remove_zone(self.selected_zone_id)
+        elif event.key() == Qt.Key_Escape:
+            # Cancel current drawing
+            if self.state == self.STATE_DRAWING:
+                self.current_points = []
+                self.state = self.STATE_IDLE
+                self.update()
         elif event.key() == Qt.Key_Z and event.modifiers() & Qt.ControlModifier:
             self.undo()
         elif event.key() == Qt.Key_Y and event.modifiers() & Qt.ControlModifier:
             self.redo()
     
     def _get_zone_at(self, pos: QPoint) -> Optional[int]:
-        """Get zone ID at position."""
-        for zone_id, rect, _ in reversed(self.zones):
-            if rect.contains(pos):
+        """Get zone ID at position using point-in-polygon test."""
+        for zone_id, points, _ in reversed(self.zones):
+            if len(points) < 3:
+                continue
+            
+            if self._point_in_polygon(pos, points):
                 return zone_id
         return None
     
-    def _get_zone_rect(self, zone_id: int) -> Optional[QRect]:
-        """Get zone rectangle by ID."""
-        for zid, rect, _ in self.zones:
+    def _point_in_polygon(self, point: QPoint, polygon: List[Tuple[int, int]]) -> bool:
+        """Check if point is inside polygon."""
+        x, y = point.x(), point.y()
+        n = len(polygon)
+        inside = False
+        
+        p1x, p1y = polygon[0]
+        for i in range(1, n + 1):
+            p2x, p2y = polygon[i % n]
+            if y > min(p1y, p2y):
+                if y <= max(p1y, p2y):
+                    if x <= max(p1x, p2x):
+                        if p1y != p2y:
+                            xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
+                        if p1x == p2x or x <= xinters:
+                            inside = not inside
+            p1x, p1y = p2x, p2y
+        
+        return inside
+    
+    def _get_zone_points(self, zone_id: int) -> Optional[List[Tuple[int, int]]]:
+        """Get zone points by ID (returns reference, not copy)."""
+        for zid, points, _ in self.zones:
             if zid == zone_id:
-                return rect
+                return points
         return None
     
-    def _get_handle_at(self, pos: QPoint, rect: QRect) -> Optional[str]:
-        """Get resize handle at position."""
-        handles = {
-            'tl': rect.topLeft(),
-            'tr': rect.topRight(),
-            'bl': rect.bottomLeft(),
-            'br': rect.bottomRight()
-        }
+    def _get_point_at(self, pos: QPoint, zone_id: int) -> Optional[int]:
+        """Get index of point near position."""
+        zone_points = self._get_zone_points(zone_id)
+        if not zone_points:
+            return None
         
-        for handle_name, handle_pos in handles.items():
-            handle_rect = QRect(
-                handle_pos.x() - self.handle_size,
-                handle_pos.y() - self.handle_size,
-                self.handle_size * 2,
-                self.handle_size * 2
-            )
-            if handle_rect.contains(pos):
-                return handle_name
+        threshold = self.point_radius + 5
+        
+        for i, (px, py) in enumerate(zone_points):
+            dist = ((pos.x() - px)**2 + (pos.y() - py)**2)**0.5
+            if dist < threshold:
+                return i
+        
         return None
-    
-    def _resize_rect(self, rect: QRect, pos: QPoint, handle: str) -> None:
-        """Resize rectangle by dragging handle."""
-        if handle == 'tl':
-            rect.setTopLeft(pos)
-        elif handle == 'tr':
-            rect.setTopRight(pos)
-        elif handle == 'bl':
-            rect.setBottomLeft(pos)
-        elif handle == 'br':
-            rect.setBottomRight(pos)
-        
-        # Ensure minimum size
-        if rect.width() < 10:
-            rect.setWidth(10)
-        if rect.height() < 10:
-            rect.setHeight(10)

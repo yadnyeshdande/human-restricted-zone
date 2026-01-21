@@ -1,4 +1,3 @@
-
 # =============================================================================
 # File: config/config_manager.py
 # =============================================================================
@@ -91,15 +90,23 @@ class ConfigManager:
             logger.info(f"Removed camera {camera_id}")
         return removed
     
-    def add_zone(self, camera_id: int, rect: Tuple[int, int, int, int]) -> Optional[Zone]:
-        """Add a zone to a camera with automatic relay assignment."""
+    def add_zone(self, camera_id: int, points: List[Tuple[int, int]]) -> Optional[Zone]:
+        """Add a polygon zone to a camera with automatic relay assignment.
+        
+        Args:
+            camera_id: Camera identifier
+            points: List of (x, y) points forming the polygon
+        
+        Returns:
+            Created zone or None
+        """
         camera = self.get_camera(camera_id)
         if camera is None:
             return None
         
         zone = Zone(
             id=self._next_zone_id,
-            rect=rect,
+            points=points,
             relay_id=self._next_relay_id
         )
         self._next_zone_id += 1
@@ -122,15 +129,15 @@ class ConfigManager:
             logger.info(f"Removed zone {zone_id} from camera {camera_id}")
         return removed
     
-    def update_zone(self, camera_id: int, zone_id: int, rect: Tuple[int, int, int, int]) -> bool:
-        """Update a zone's rectangle."""
+    def update_zone(self, camera_id: int, zone_id: int, points: List[Tuple[int, int]]) -> bool:
+        """Update a zone's polygon points."""
         camera = self.get_camera(camera_id)
         if camera is None:
             return False
         
         for zone in camera.zones:
             if zone.id == zone_id:
-                zone.rect = rect
+                zone.points = points
                 logger.info(f"Updated zone {zone_id} in camera {camera_id}")
                 return True
         return False
@@ -147,11 +154,7 @@ class ConfigManager:
         return self.config.cameras if self.config else []
 
     def update_processing_resolution(self, new_resolution: Tuple[int, int]) -> None:
-        """Update processing resolution and rescale all zone coordinates.
-        
-        Args:
-            new_resolution: New (width, height)
-        """
+        """Update processing resolution and rescale all zone coordinates."""
         if self.config is None:
             return
         
@@ -163,19 +166,18 @@ class ConfigManager:
         scale_x = new_w / old_w
         scale_y = new_h / old_h
         
-        # Rescale all zones
+        # Rescale all zone polygons
         for camera in self.config.cameras:
             for zone in camera.zones:
-                x1, y1, x2, y2 = zone.rect
-                zone.rect = (
-                    int(x1 * scale_x),
-                    int(y1 * scale_y),
-                    int(x2 * scale_x),
-                    int(y2 * scale_y)
-                )
+                # Scale each point in the polygon
+                scaled_points = [
+                    (int(x * scale_x), int(y * scale_y))
+                    for x, y in zone.points
+                ]
+                zone.points = scaled_points
         
         # Update resolution
         self.config.processing_resolution = new_resolution
         
         logger.info(f"Resolution updated from {old_resolution} to {new_resolution}")
-        logger.info(f"All zone coordinates rescaled")
+        logger.info(f"All zone polygons rescaled")

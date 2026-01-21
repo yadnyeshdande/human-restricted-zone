@@ -127,9 +127,11 @@ class TeachingPage(QWidget):
         
         # Instructions
         instructions = QLabel(
-            "Draw zones by clicking and dragging. "
-            "Select zones to move or resize. "
-            "Press Delete to remove selected zone. "
+            "Click to add points and create polygon zones. "
+            "Click near first point or right-click to finish polygon. "
+            "Click zone to select, drag to move entire zone. "
+            "Drag individual points to reshape. "
+            "Press Delete to remove selected zone, Esc to cancel drawing. "
             "Ctrl+Z to undo, Ctrl+Y to redo."
         )
         instructions.setWordWrap(True)
@@ -142,9 +144,9 @@ class TeachingPage(QWidget):
         for camera in cameras:
             self._add_camera_panel(camera.id, camera.rtsp_url)
             
-            # Load zones
+            # Load zones (now using points instead of rect)
             for zone in camera.zones:
-                self._add_zone_visual(camera.id, zone.id, zone.rect, zone.relay_id)
+                self._add_zone_visual(camera.id, zone.id, zone.points, zone.relay_id)
     
     def _add_camera(self) -> None:
         """Add a new camera."""
@@ -200,9 +202,12 @@ class TeachingPage(QWidget):
         video_panel.setMinimumSize(480, 350)
         
         # Create zone editor overlay - MUST be child of video_label, not video_panel
+        # Create zone editor overlay - MUST be child of video_label
         zone_editor = ZoneEditor(video_panel.video_label)
-        zone_editor.setGeometry(video_panel.video_label.rect())  # Use rect() not geometry()
-        zone_editor.raise_()  # Ensure it's on top
+        zone_editor.setGeometry(0, 0, 
+                                video_panel.video_label.width(),
+                                video_panel.video_label.height())
+        zone_editor.raise_()  # Ensure overlay is on top
         zone_editor.zone_created.connect(
             lambda rect, cid=camera_id: self._on_zone_created(cid, rect)
         )
@@ -277,13 +282,27 @@ class TeachingPage(QWidget):
             col = idx % cols
             self.camera_grid.addWidget(container, row, col)
     
-    def _on_zone_created(self, camera_id: int, rect: Tuple[int, int, int, int]) -> None:
+    def _on_zone_created(self, camera_id: int, points: List[Tuple[int, int]]) -> None:
         """Handle zone creation."""
-        # Add to configuration
-        zone = self.config_manager.add_zone(camera_id, rect)
+        # Convert from widget coordinates to processing coordinates
+        if camera_id in self.video_panels:
+            video_panel = self.video_panels[camera_id]
+            
+            # Convert all points
+            processing_points = [
+                video_panel.widget_to_processing(x, y)
+                for x, y in points
+            ]
+            
+            logger.info(f"Polygon zone created - {len(points)} points")
+        else:
+            processing_points = points
+        
+        # Add to configuration with processing coordinates
+        zone = self.config_manager.add_zone(camera_id, processing_points)
         
         if zone:
-            self._add_zone_visual(camera_id, zone.id, rect, zone.relay_id)
+            self._add_zone_visual(camera_id, zone.id, processing_points, zone.relay_id)
             self.status_label.setText(
                 f"Zone {zone.id} created for Camera {camera_id}, "
                 f"assigned to Relay {zone.relay_id}"
@@ -291,12 +310,23 @@ class TeachingPage(QWidget):
             self.zones_changed.emit()
             logger.info(
                 f"Zone created: Camera {camera_id}, Zone {zone.id}, "
-                f"Relay {zone.relay_id}, Rect {rect}"
+                f"Relay {zone.relay_id}, Points: {len(processing_points)}"
             )
     
-    def _on_zone_modified(self, camera_id: int, zone_id: int, rect: Tuple[int, int, int, int]) -> None:
+    def _on_zone_modified(self, camera_id: int, zone_id: int, points: List[Tuple[int, int]]) -> None:
         """Handle zone modification."""
-        if self.config_manager.update_zone(camera_id, zone_id, rect):
+        # Convert from widget coordinates to processing coordinates
+        if camera_id in self.video_panels:
+            video_panel = self.video_panels[camera_id]
+            
+            processing_points = [
+                video_panel.widget_to_processing(x, y)
+                for x, y in points
+            ]
+        else:
+            processing_points = points
+        
+        if self.config_manager.update_zone(camera_id, zone_id, processing_points):
             self._update_zone_visuals(camera_id)
             self.status_label.setText(f"Zone {zone_id} updated")
             self.zones_changed.emit()
@@ -305,13 +335,21 @@ class TeachingPage(QWidget):
         self,
         camera_id: int,
         zone_id: int,
-        rect: Tuple[int, int, int, int],
+        points: List[Tuple[int, int]],
         relay_id: int
     ) -> None:
         """Add zone to visual editor."""
-        if camera_id in self.zone_editors:
+        if camera_id in self.zone_editors and camera_id in self.video_panels:
+            # Convert processing coordinates to widget coordinates for display
+            video_panel = self.video_panels[camera_id]
+            
+            widget_points = [
+                video_panel.processing_to_widget(x, y)
+                for x, y in points
+            ]
+            
             color = self._get_zone_color(relay_id)
-            self.zone_editors[camera_id].add_zone(zone_id, rect, color)
+            self.zone_editors[camera_id].add_zone(zone_id, widget_points, color)
             self._update_zone_visuals(camera_id)
     
     def _update_zone_visuals(self, camera_id: int) -> None:
@@ -327,7 +365,7 @@ class TeachingPage(QWidget):
             return
         
         zone_data = []
-        for zone_id, rect in zones:
+        for zone_id, points in zones:  # Now returns points instead of rect
             # Find relay_id
             relay_id = None
             for zone in camera.zones:
@@ -337,7 +375,7 @@ class TeachingPage(QWidget):
             
             if relay_id:
                 color = self._get_zone_color(relay_id)
-                zone_data.append((zone_id, rect, (color.red(), color.green(), color.blue())))
+                zone_data.append((zone_id, points, (color.red(), color.green(), color.blue())))
         
         self.video_panels[camera_id].set_zones(zone_data)
     
@@ -410,13 +448,18 @@ class TeachingPage(QWidget):
                 video_panel.update_info(f"Camera {camera_id} | {status} | {fps:.1f} FPS")
     
     def resizeEvent(self, event):
-        """Handle resize to update zone editor geometry."""
+        """Handle resize to update zone editor geometry and zone positions."""
         super().resizeEvent(event)
+        
         for camera_id, video_panel in self.video_panels.items():
             if camera_id in self.zone_editors:
                 zone_editor = self.zone_editors[camera_id]
-                # Use the video_label's rect, not geometry (which includes position offset)
+                
+                # Update zone editor size to match video label
                 zone_editor.setGeometry(0, 0, 
                                     video_panel.video_label.width(), 
                                     video_panel.video_label.height())
                 
+                # Refresh zone visuals with updated coordinates
+                self._update_zone_visuals(camera_id)
+                    

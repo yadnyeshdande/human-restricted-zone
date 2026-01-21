@@ -90,19 +90,34 @@ class VideoPanel(QWidget):
         # Convert BGR to RGB
         frame_rgb = cv2.cvtColor(self.current_frame, cv2.COLOR_BGR2RGB)
         
-        # Draw zones on frame
-        for zone_id, rect, color in self.zones:
-            x1, y1, x2, y2 = rect
-            cv2.rectangle(frame_rgb, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(
-                frame_rgb,
-                f"Zone {zone_id}",
-                (x1 + 5, y1 + 20),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                color,
-                2
-            )
+        # Draw zones on frame (now polygons instead of rectangles)
+        for zone_id, points, color in self.zones:
+            if len(points) < 2:
+                continue
+            
+            # Convert points to numpy array for cv2.polylines
+            pts = np.array(points, np.int32)
+            pts = pts.reshape((-1, 1, 2))
+            
+            # Draw polygon outline
+            cv2.polylines(frame_rgb, [pts], True, color, 2)
+            
+            # Fill with semi-transparency
+            overlay = frame_rgb.copy()
+            cv2.fillPoly(overlay, [pts], color)
+            cv2.addWeighted(overlay, 0.15, frame_rgb, 0.85, 0, frame_rgb)
+            
+            # Draw zone label at first point
+            if len(points) > 0:
+                cv2.putText(
+                    frame_rgb,
+                    f"Zone {zone_id}",
+                    (int(points[0][0]) + 5, int(points[0][1]) - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    color,
+                    2
+                )
         
         # Convert to QPixmap with aspect ratio preservation
         height, width, channel = frame_rgb.shape
@@ -134,7 +149,7 @@ class VideoPanel(QWidget):
         """Set zones to display.
         
         Args:
-            zones: List of (zone_id, rect, color) tuples
+            zones: List of (zone_id, points, color) tuples where points is List[Tuple[int, int]]
         """
         self.zones = zones
         if self.current_frame is not None:

@@ -5,31 +5,44 @@
 """Data models and schemas."""
 
 from dataclasses import dataclass, field, asdict
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Any
 import json
 
 
 @dataclass
 class Zone:
-    """Restricted zone definition."""
+    """Restricted zone definition - supports polygon shapes."""
     id: int
-    rect: Tuple[int, int, int, int]  # (x1, y1, x2, y2) in processing resolution
+    points: List[Tuple[int, int]]  # List of (x, y) points forming polygon
     relay_id: int
     
     def to_dict(self) -> dict:
         return {
             'id': self.id,
-            'rect': list(self.rect),
+            'points': [list(p) for p in self.points],  # Convert tuples to lists for JSON
             'relay_id': self.relay_id
         }
     
     @classmethod
     def from_dict(cls, data: dict) -> 'Zone':
-        return cls(
-            id=data['id'],
-            rect=tuple(data['rect']),
-            relay_id=data['relay_id']
-        )
+        # Support both old format (rect) and new format (points)
+        if 'points' in data:
+            return cls(
+                id=data['id'],
+                points=[tuple(p) for p in data['points']],
+                relay_id=data['relay_id']
+            )
+        elif 'rect' in data:
+            # Convert old rectangle format to polygon
+            x1, y1, x2, y2 = data['rect']
+            points = [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
+            return cls(
+                id=data['id'],
+                points=points,
+                relay_id=data['relay_id']
+            )
+        else:
+            raise ValueError("Zone data must contain either 'points' or 'rect'")
 
 
 @dataclass

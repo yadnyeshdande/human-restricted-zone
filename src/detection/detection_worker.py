@@ -23,8 +23,8 @@ class DetectionWorker(StoppableThread):
         self,
         camera_id: int,
         frame_queue: queue.Queue,
-        zones: List[Tuple[int, Tuple[int, int, int, int], int]],  # [(zone_id, rect, relay_id)]
-        on_violation: Callable[[int, int, int, np.ndarray], None]  # (camera_id, zone_id, relay_id, frame)
+        zones: List[Tuple[int, List[Tuple[int, int]], int]],  # [(zone_id, points, relay_id)]
+        on_violation: Callable[[int, int, int, np.ndarray], None]
     ):
         """Initialize detection worker.
         
@@ -64,21 +64,21 @@ class DetectionWorker(StoppableThread):
                 # Run detection
                 persons = self.detector.detect_persons(frame)
                 
-               # Check violations
+                # Check violations
                 from config.app_settings import SETTINGS
-                from .geometry import bbox_overlaps_rect
-                
+                from .geometry import bbox_overlaps_polygon, point_in_polygon
+
                 for bbox in persons:
-                    for zone_id, rect, relay_id in self.zones:
+                    for zone_id, points, relay_id in self.zones:  # Now receives points instead of rect
                         violation = False
                         
                         if SETTINGS.violation_mode == 'center':
                             # Only trigger when person's center is inside zone
                             center = bbox_center(bbox)
-                            violation = point_in_rect(center, rect)
+                            violation = point_in_polygon(center, points)
                         elif SETTINGS.violation_mode == 'overlap':
                             # Trigger when person's bbox overlaps with zone
-                            violation = bbox_overlaps_rect(bbox, rect)
+                            violation = bbox_overlaps_polygon(bbox, points)
                         
                         if violation:
                             logger.warning(
@@ -101,7 +101,7 @@ class DetectionWorker(StoppableThread):
         """Get current detection FPS."""
         return self.current_fps
     
-    def update_zones(self, zones: List[Tuple[int, Tuple[int, int, int, int], int]]) -> None:
+    def update_zones(self, zones: List[Tuple[int, List[Tuple[int, int]], int]]) -> None:
         """Update restricted zones."""
         self.zones = zones
         logger.info(f"Updated zones for camera {self.camera_id}: {len(zones)} zones")

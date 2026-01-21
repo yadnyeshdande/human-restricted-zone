@@ -142,9 +142,9 @@ class AppSettings:
     
     def reset_to_defaults(self) -> None:
         '''Reset all settings to default values.'''
-        from utils.logger import get_logger  # ADD THIS LINE
-    
-        logger = get_logger("AppSettings")  # ADD THIS LINE
+        from utils.logger import get_logger
+        
+        logger = get_logger("AppSettings")
         
         self.processing_resolution = (1280, 720)
         self.yolo_model = "yolov8n.pt"
@@ -157,8 +157,12 @@ class AppSettings:
         self.usb_serial = None
         self.frame_queue_size = 30
         self.ui_update_fps = 30
-        logger.info("Settings reset to defaults")
-        SETTINGS.load()
+        
+        # Save defaults to file immediately
+        self.save()
+        
+        logger.info("Settings reset to defaults and saved")
+        # DO NOT call load() here - we just set the values we want!
 
 
 # Default settings instance

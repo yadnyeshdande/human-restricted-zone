@@ -7,7 +7,7 @@ import cv2
 import queue
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple, Optional
 import numpy as np
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton,
@@ -194,7 +194,7 @@ class DetectionPage(QWidget):
             color = self._get_zone_color(zone.relay_id)
             zone_data.append((
                 zone.id,
-                zone.rect,
+                zone.points,  # Now using points instead of rect
                 (color.red(), color.green(), color.blue())
             ))
         
@@ -228,9 +228,9 @@ class DetectionPage(QWidget):
                 logger.warning(f"No frame queue for camera {camera.id}")
                 continue
             
-            # Prepare zones data
+            # Prepare zones data (now with points instead of rect)
             zones_data = [
-                (zone.id, zone.rect, zone.relay_id)
+                (zone.id, zone.points, zone.relay_id)
                 for zone in camera.zones
             ]
             
