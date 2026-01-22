@@ -3779,31 +3779,65 @@ class TeachingPage(QWidget):
         for camera_id, video_panel in self.video_panels.items():
             frame = self.camera_manager.get_latest_frame(camera_id)
             if frame is not None:
-                # 1. Update frame first (calculates new scale/offsets)
+                # 1. Update the video frame (Calculates new Scale/Offsets internally)
                 video_panel.update_frame(frame)
                 
-                # 2. Sync ZoneEditor geometry to match video_label
+                # 2. FIX: Sync ZoneEditor geometry
                 if camera_id in self.zone_editors:
                     zone_editor = self.zone_editors[camera_id]
-                    target_rect = video_panel.video_label.geometry()
+                    label = video_panel.video_label
                     
-                    # If video size changed, sync overlay and refresh zones
+                    # FIX "Double Offset": 
+                    # Since Editor is child of Label, position must be (0,0)
+                    target_rect = QRect(0, 0, label.width(), label.height())
+                    
+                    # FIX "Drift":
+                    # Only update if changed. This automatically handles Resize/Layout changes
+                    # because we are inside the timer loop where the latest size is known.
                     if zone_editor.geometry() != target_rect:
                         zone_editor.setGeometry(target_rect)
-                        # Refresh zones with NEW scale from step 1
                         self._update_zone_visuals(camera_id)
-                
+
                 # Update info
                 fps = self.camera_manager.get_fps(camera_id)
                 connected = self.camera_manager.is_connected(camera_id)
                 status = "Connected" if connected else "Disconnected"
                 video_panel.update_info(f"Camera {camera_id} | {status} | {fps:.1f} FPS")
-    
+
     def resizeEvent(self, event):
-        """Handle resize event - timer will sync geometry."""
+        """Handle resize."""
         super().resizeEvent(event)
-        # The _update_frames timer will handle geometry sync automatically
-        # This prevents race conditions with scale calculation
+        # Empty! The timer loop handles geometry sync perfectly now.
+    # def _update_frames(self) -> None:
+    #     """Update video frames and sync zone editor geometry."""
+    #     for camera_id, video_panel in self.video_panels.items():
+    #         frame = self.camera_manager.get_latest_frame(camera_id)
+    #         if frame is not None:
+    #             # 1. Update frame first (calculates new scale/offsets)
+    #             video_panel.update_frame(frame)
+                
+    #             # 2. Sync ZoneEditor geometry to match video_label
+    #             if camera_id in self.zone_editors:
+    #                 zone_editor = self.zone_editors[camera_id]
+    #                 target_rect = video_panel.video_label.geometry()
+                    
+    #                 # If video size changed, sync overlay and refresh zones
+    #                 if zone_editor.geometry() != target_rect:
+    #                     zone_editor.setGeometry(target_rect)
+    #                     # Refresh zones with NEW scale from step 1
+    #                     self._update_zone_visuals(camera_id)
+                
+    #             # Update info
+    #             fps = self.camera_manager.get_fps(camera_id)
+    #             connected = self.camera_manager.is_connected(camera_id)
+    #             status = "Connected" if connected else "Disconnected"
+    #             video_panel.update_info(f"Camera {camera_id} | {status} | {fps:.1f} FPS")
+    
+    # def resizeEvent(self, event):
+    #     """Handle resize event - timer will sync geometry."""
+    #     super().resizeEvent(event)
+    #     # The _update_frames timer will handle geometry sync automatically
+    #     # This prevents race conditions with scale calculation
                     
 
 
