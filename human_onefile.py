@@ -2164,10 +2164,7 @@ class DetectionPage(QWidget):
         self.camera_grid_widget = QWidget()
         self.camera_grid = QGridLayout(self.camera_grid_widget)
         self.camera_grid.setSpacing(10)
-        self.camera_grid.setRowStretch(0, 1)  # ADD THESE LINES
-        self.camera_grid.setRowStretch(1, 1)
-        self.camera_grid.setColumnStretch(0, 1)
-        self.camera_grid.setColumnStretch(1, 1)
+        # Stretches will be set dynamically in _add_camera_panel
         scroll_area.setWidget(self.camera_grid_widget)
         
         layout.addWidget(scroll_area)
@@ -2186,12 +2183,23 @@ class DetectionPage(QWidget):
             self._add_camera_panel(camera.id, camera.rtsp_url)
     
     def _add_camera_panel(self, camera_id: int, rtsp_url: str) -> None:
-        """Add camera panel to grid."""
+        """Add camera panel to grid.
+        
+        Args:
+            camera_id: Camera identifier
+            rtsp_url: RTSP URL
+        """
         # Calculate grid position
         num_cameras = len(self.video_panels)
         cols = 2  # 2 columns
         row = num_cameras // cols
         col = num_cameras % cols
+        
+        # Dynamically set stretch factors for new row/column
+        self.camera_grid.setRowStretch(row, 1)
+        self.camera_grid.setColumnStretch(col, 1)
+        
+        # Create container
         
         # Create container
         container = QWidget()
@@ -2293,7 +2301,7 @@ class DetectionPage(QWidget):
                     for zone in camera.zones
                 ]
                 
-                # Create detection worker
+               # Create detection worker with proper error handling
                 try:
                     worker = DetectionWorker(
                         camera_id=camera.id,
@@ -2302,37 +2310,40 @@ class DetectionPage(QWidget):
                         on_violation=self._handle_violation
                     )
                     
-                    # Check if model loaded successfully
-                    if not worker.detector.is_model_loaded():
-                        progress.close()
-                        QMessageBox.critical(
-                            self,
-                            "Model Load Failed",
-                            f"Failed to load YOLO model for camera {camera.id}.\n\n"
-                            f"Please check:\n"
-                            f"1. Model file exists in models/ folder\n"
-                            f"2. Go to Settings → Detection Settings\n"
-                            f"3. Click 'Check & Download' to download the model\n"
-                            f"4. Restart the application\n\n"
-                            f"Check logs for more details."
-                        )
-                        logger.error(f"Model load failed for camera {camera.id}")
-                        return
-                    
                     self.detection_workers[camera.id] = worker
                     worker.start()
-                    
                     logger.info(f"[OK] Detection started for camera {camera.id}")
                     
                 except Exception as e:
                     progress.close()
                     logger.error(f"Failed to start detection for camera {camera.id}: {e}")
-                    QMessageBox.critical(
-                        self,
-                        "Detection Startup Error",
-                        f"Failed to start detection for camera {camera.id}:\n{e}\n\n"
-                        f"Check logs for details."
-                    )
+                    
+                    # Check if it's a model loading error
+                    from pathlib import Path
+                    models_dir = Path("models")
+                    model_file = models_dir / SETTINGS.yolo_model
+                    
+                    if not model_file.exists():
+                        QMessageBox.critical(
+                            self,
+                            "Model Not Found",
+                            f"YOLO model '{SETTINGS.yolo_model}' not found!\n\n"
+                            f"Expected location: {model_file}\n\n"
+                            f"To fix this:\n"
+                            f"1. Go to Settings → Detection Settings\n"
+                            f"2. Click 'Check & Download' button\n"
+                            f"3. Wait for download to complete\n"
+                            f"4. Restart the application\n\n"
+                            f"Error details: {str(e)}"
+                        )
+                    else:
+                        QMessageBox.critical(
+                            self,
+                            "Detection Startup Error",
+                            f"Failed to initialize detection for camera {camera.id}:\n\n"
+                            f"{str(e)}\n\n"
+                            f"Check logs for more details."
+                        )
                     return
             
             progress.close()
@@ -3450,10 +3461,7 @@ class TeachingPage(QWidget):
         self.camera_grid_widget = QWidget()
         self.camera_grid = QGridLayout(self.camera_grid_widget)
         self.camera_grid.setSpacing(10)
-        self.camera_grid.setRowStretch(0, 1)  # Allow rows to expand
-        self.camera_grid.setRowStretch(1, 1)
-        self.camera_grid.setColumnStretch(0, 1)  # Allow columns to expand equally
-        self.camera_grid.setColumnStretch(1, 1)
+        # Stretches will be set dynamically in _add_camera_panel
         scroll_area.setWidget(self.camera_grid_widget)
         
         layout.addWidget(scroll_area)
@@ -3505,17 +3513,16 @@ class TeachingPage(QWidget):
             QMessageBox.warning(self, "Error", f"Failed to connect to camera")
     
     def _add_camera_panel(self, camera_id: int, rtsp_url: str) -> None:
-        """Add camera panel to grid.
-        
-        Args:
-            camera_id: Camera identifier
-            rtsp_url: RTSP URL
-        """
+        """Add camera panel to grid."""
         # Calculate grid position
         num_cameras = len(self.video_panels)
         cols = 2  # 2 columns
         row = num_cameras // cols
         col = num_cameras % cols
+        
+        # Dynamically set stretch factors for new row/column
+        self.camera_grid.setRowStretch(row, 1)
+        self.camera_grid.setColumnStretch(col, 1)
         
         # Create container
         container = QWidget()
@@ -3768,11 +3775,23 @@ class TeachingPage(QWidget):
             QMessageBox.warning(self, "Error", "Failed to save configuration")
     
     def _update_frames(self) -> None:
-        """Update video frames."""
+        """Update video frames and sync zone editor geometry."""
         for camera_id, video_panel in self.video_panels.items():
             frame = self.camera_manager.get_latest_frame(camera_id)
             if frame is not None:
+                # 1. Update frame first (calculates new scale/offsets)
                 video_panel.update_frame(frame)
+                
+                # 2. Sync ZoneEditor geometry to match video_label
+                if camera_id in self.zone_editors:
+                    zone_editor = self.zone_editors[camera_id]
+                    target_rect = video_panel.video_label.geometry()
+                    
+                    # If video size changed, sync overlay and refresh zones
+                    if zone_editor.geometry() != target_rect:
+                        zone_editor.setGeometry(target_rect)
+                        # Refresh zones with NEW scale from step 1
+                        self._update_zone_visuals(camera_id)
                 
                 # Update info
                 fps = self.camera_manager.get_fps(camera_id)
@@ -3781,20 +3800,10 @@ class TeachingPage(QWidget):
                 video_panel.update_info(f"Camera {camera_id} | {status} | {fps:.1f} FPS")
     
     def resizeEvent(self, event):
-        """Handle resize to update zone editor geometry and zone positions."""
+        """Handle resize event - timer will sync geometry."""
         super().resizeEvent(event)
-        
-        for camera_id, video_panel in self.video_panels.items():
-            if camera_id in self.zone_editors:
-                zone_editor = self.zone_editors[camera_id]
-                
-                # Update zone editor size to match video label
-                zone_editor.setGeometry(0, 0, 
-                                    video_panel.video_label.width(), 
-                                    video_panel.video_label.height())
-                
-                # Refresh zone visuals with updated coordinates
-                self._update_zone_visuals(camera_id)
+        # The _update_frames timer will handle geometry sync automatically
+        # This prevents race conditions with scale calculation
                     
 
 

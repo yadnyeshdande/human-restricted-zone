@@ -127,10 +127,7 @@ class DetectionPage(QWidget):
         self.camera_grid_widget = QWidget()
         self.camera_grid = QGridLayout(self.camera_grid_widget)
         self.camera_grid.setSpacing(10)
-        self.camera_grid.setRowStretch(0, 1)  # ADD THESE LINES
-        self.camera_grid.setRowStretch(1, 1)
-        self.camera_grid.setColumnStretch(0, 1)
-        self.camera_grid.setColumnStretch(1, 1)
+        # Stretches will be set dynamically in _add_camera_panel
         scroll_area.setWidget(self.camera_grid_widget)
         
         layout.addWidget(scroll_area)
@@ -155,6 +152,10 @@ class DetectionPage(QWidget):
         cols = 2  # 2 columns
         row = num_cameras // cols
         col = num_cameras % cols
+        
+        # Dynamically set stretch factors for new row/column
+        self.camera_grid.setRowStretch(row, 1)
+        self.camera_grid.setColumnStretch(col, 1)
         
         # Create container
         container = QWidget()
@@ -256,7 +257,7 @@ class DetectionPage(QWidget):
                     for zone in camera.zones
                 ]
                 
-                # Create detection worker
+                # Create detection worker with proper error handling
                 try:
                     worker = DetectionWorker(
                         camera_id=camera.id,
@@ -265,37 +266,40 @@ class DetectionPage(QWidget):
                         on_violation=self._handle_violation
                     )
                     
-                    # Check if model loaded successfully
-                    if not worker.detector.is_model_loaded():
-                        progress.close()
-                        QMessageBox.critical(
-                            self,
-                            "Model Load Failed",
-                            f"Failed to load YOLO model for camera {camera.id}.\n\n"
-                            f"Please check:\n"
-                            f"1. Model file exists in models/ folder\n"
-                            f"2. Go to Settings → Detection Settings\n"
-                            f"3. Click 'Check & Download' to download the model\n"
-                            f"4. Restart the application\n\n"
-                            f"Check logs for more details."
-                        )
-                        logger.error(f"Model load failed for camera {camera.id}")
-                        return
-                    
                     self.detection_workers[camera.id] = worker
                     worker.start()
-                    
                     logger.info(f"[OK] Detection started for camera {camera.id}")
                     
                 except Exception as e:
                     progress.close()
                     logger.error(f"Failed to start detection for camera {camera.id}: {e}")
-                    QMessageBox.critical(
-                        self,
-                        "Detection Startup Error",
-                        f"Failed to start detection for camera {camera.id}:\n{e}\n\n"
-                        f"Check logs for details."
-                    )
+                    
+                    # Check if it's a model loading error
+                    from pathlib import Path
+                    models_dir = Path("models")
+                    model_file = models_dir / SETTINGS.yolo_model
+                    
+                    if not model_file.exists():
+                        QMessageBox.critical(
+                            self,
+                            "Model Not Found",
+                            f"YOLO model '{SETTINGS.yolo_model}' not found!\n\n"
+                            f"Expected location: {model_file}\n\n"
+                            f"To fix this:\n"
+                            f"1. Go to Settings → Detection Settings\n"
+                            f"2. Click 'Check & Download' button\n"
+                            f"3. Wait for download to complete\n"
+                            f"4. Restart the application\n\n"
+                            f"Error details: {str(e)}"
+                        )
+                    else:
+                        QMessageBox.critical(
+                            self,
+                            "Detection Startup Error",
+                            f"Failed to initialize detection for camera {camera.id}:\n\n"
+                            f"{str(e)}\n\n"
+                            f"Check logs for more details."
+                        )
                     return
             
             progress.close()

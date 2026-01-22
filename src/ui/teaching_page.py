@@ -117,10 +117,7 @@ class TeachingPage(QWidget):
         self.camera_grid_widget = QWidget()
         self.camera_grid = QGridLayout(self.camera_grid_widget)
         self.camera_grid.setSpacing(10)
-        self.camera_grid.setRowStretch(0, 1)  # Allow rows to expand
-        self.camera_grid.setRowStretch(1, 1)
-        self.camera_grid.setColumnStretch(0, 1)  # Allow columns to expand equally
-        self.camera_grid.setColumnStretch(1, 1)
+        # Stretches will be set dynamically in _add_camera_panel
         scroll_area.setWidget(self.camera_grid_widget)
         
         layout.addWidget(scroll_area)
@@ -183,6 +180,12 @@ class TeachingPage(QWidget):
         cols = 2  # 2 columns
         row = num_cameras // cols
         col = num_cameras % cols
+        
+        # Dynamically set stretch factors for new row/column
+        self.camera_grid.setRowStretch(row, 1)
+        self.camera_grid.setColumnStretch(col, 1)
+        
+        # Create container
         
         # Create container
         container = QWidget()
@@ -435,11 +438,23 @@ class TeachingPage(QWidget):
             QMessageBox.warning(self, "Error", "Failed to save configuration")
     
     def _update_frames(self) -> None:
-        """Update video frames."""
+        """Update video frames and sync zone editor geometry."""
         for camera_id, video_panel in self.video_panels.items():
             frame = self.camera_manager.get_latest_frame(camera_id)
             if frame is not None:
+                # 1. Update frame first (calculates new scale/offsets)
                 video_panel.update_frame(frame)
+                
+                # 2. Sync ZoneEditor geometry to match video_label
+                if camera_id in self.zone_editors:
+                    zone_editor = self.zone_editors[camera_id]
+                    target_rect = video_panel.video_label.geometry()
+                    
+                    # If video size changed, sync overlay and refresh zones
+                    if zone_editor.geometry() != target_rect:
+                        zone_editor.setGeometry(target_rect)
+                        # Refresh zones with NEW scale from step 1
+                        self._update_zone_visuals(camera_id)
                 
                 # Update info
                 fps = self.camera_manager.get_fps(camera_id)
@@ -448,18 +463,24 @@ class TeachingPage(QWidget):
                 video_panel.update_info(f"Camera {camera_id} | {status} | {fps:.1f} FPS")
     
     def resizeEvent(self, event):
-        """Handle resize to update zone editor geometry and zone positions."""
+        """Handle resize event - timer will sync geometry."""
         super().resizeEvent(event)
+        # The _update_frames timer will handle geometry sync automatically
+        # This prevents race conditions with scale calculation
+    
+    # def resizeEvent(self, event):
+    #     """Handle resize to update zone editor geometry and zone positions."""
+    #     super().resizeEvent(event)
         
-        for camera_id, video_panel in self.video_panels.items():
-            if camera_id in self.zone_editors:
-                zone_editor = self.zone_editors[camera_id]
+    #     for camera_id, video_panel in self.video_panels.items():
+    #         if camera_id in self.zone_editors:
+    #             zone_editor = self.zone_editors[camera_id]
                 
-                # Update zone editor size to match video label
-                zone_editor.setGeometry(0, 0, 
-                                    video_panel.video_label.width(), 
-                                    video_panel.video_label.height())
+    #             # Update zone editor size to match video label
+    #             zone_editor.setGeometry(0, 0, 
+    #                                 video_panel.video_label.width(), 
+    #                                 video_panel.video_label.height())
                 
-                # Refresh zone visuals with updated coordinates
-                self._update_zone_visuals(camera_id)
+    #             # Refresh zone visuals with updated coordinates
+    #             self._update_zone_visuals(camera_id)
                     
