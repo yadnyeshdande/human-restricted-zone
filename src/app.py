@@ -88,9 +88,9 @@ def main():
             config_manager.update_processing_resolution(app_resolution)
             config_manager.save()
             
-            logger.info(f"✓ Zones rescaled and saved")
+            logger.info(f"[OK] Zones rescaled and saved")
         else:
-            logger.info(f"✓ Resolution in sync: {app_resolution}")
+            logger.info(f"[OK] Resolution in sync: {app_resolution}")
         
         # ========================================
         # Initialize camera manager with SYNCED resolution

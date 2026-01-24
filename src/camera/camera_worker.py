@@ -60,6 +60,11 @@ class CameraWorker(StoppableThread):
                 return True
             else:
                 logger.error(f"Camera {self.camera_id} failed to open")
+                logger.error(f"  URL: {self.rtsp_url}")
+                logger.error(f"  Check: 1) URL format is correct")
+                logger.error(f"  Check: 2) Username:password are correct (no double colons)")
+                logger.error(f"  Check: 3) Camera IP and port are accessible")
+                logger.error(f"  Check: 4) Camera may block connections after multiple failed attempts")
                 self.is_connected = False
                 return False
                 

@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton,
     QLabel, QInputDialog, QMessageBox, QScrollArea, QSizePolicy
 )
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRect
 from PyQt5.QtGui import QColor
 from config.config_manager import ConfigManager
 from camera.camera_manager import CameraManager
@@ -145,6 +145,46 @@ class TeachingPage(QWidget):
             for zone in camera.zones:
                 self._add_zone_visual(camera.id, zone.id, zone.points, zone.relay_id)
     
+    def _validate_rtsp_url(self, url: str) -> Tuple[bool, str]:
+        """Validate RTSP URL format.
+        
+        Args:
+            url: RTSP URL to validate
+            
+        Returns:
+            Tuple of (is_valid, error_message)
+        """
+        url = url.strip()
+        
+        # Check basic format
+        if not url.startswith('rtsp://'):
+            return False, "URL must start with rtsp://"
+        
+        # Check for @ symbol (indicates credentials)
+        if '@' in url:
+            try:
+                # Parse: rtsp://username:password@host:port/path
+                scheme_end = url.find('://')
+                if scheme_end == -1:
+                    return False, "Invalid URL format"
+                
+                cred_and_host = url[scheme_end + 3:]
+                at_pos = cred_and_host.rfind('@')  # Use rfind to get the last @ (for IPv6 compatibility)
+                
+                if at_pos > 0:
+                    credentials = cred_and_host[:at_pos]
+                    
+                    # Check password format - should have exactly one colon separating username:password
+                    colon_count = credentials.count(':')
+                    if colon_count == 0:
+                        return False, "Credentials must be in format: username:password"
+                    elif colon_count > 1:
+                        return False, "Password contains colons which may cause parsing issues. Use URL encoding if needed."
+            except Exception as e:
+                return False, f"URL parsing error: {str(e)}"
+        
+        return True, ""
+    
     def _add_camera(self) -> None:
         """Add a new camera."""
         rtsp_url, ok = QInputDialog.getText(
@@ -156,6 +196,14 @@ class TeachingPage(QWidget):
         
         if not ok or not rtsp_url:
             return
+        
+        # Validate URL
+        is_valid, error_msg = self._validate_rtsp_url(rtsp_url)
+        if not is_valid:
+            QMessageBox.warning(self, "Invalid RTSP URL", error_msg)
+            return
+        
+        rtsp_url = rtsp_url.strip()
         
         # Add to configuration
         camera = self.config_manager.add_camera(rtsp_url)
