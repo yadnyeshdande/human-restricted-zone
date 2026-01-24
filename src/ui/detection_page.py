@@ -228,15 +228,26 @@ class DetectionPage(QWidget):
             "Initializing detection system...\n\nLoading YOLO model...",
             None,
             0,
-            0
+            0,
+            self
         )
         progress.setWindowTitle("Starting Detection")
         progress.setWindowModality(QtCore.WindowModal)
         progress.setCancelButton(None)
+        progress.setMinimumWidth(400)
+        progress.setMinimumHeight(150)
         progress.show()
+        
+        # Force immediate repaint to ensure dialog is visible
+        progress.repaint()
         
         try:
             cameras = self.config_manager.get_all_cameras()
+            
+            if not cameras:
+                progress.close()
+                QMessageBox.warning(self, "No Cameras", "No cameras configured. Please add cameras first.")
+                return
             
             for idx, camera in enumerate(cameras):
                 progress.setLabelText(
@@ -328,6 +339,8 @@ class DetectionPage(QWidget):
         logger.info("Stopping detection...")
         
         for camera_id, worker in self.detection_workers.items():
+            # Unload YOLO model to free computational resources
+            worker.unload_model()
             worker.stop()
             worker.join(timeout=5.0)
             logger.info(f"Detection stopped for camera {camera_id}")
@@ -344,7 +357,9 @@ class DetectionPage(QWidget):
         camera_id: int,
         zone_id: int,
         relay_id: int,
-        frame: np.ndarray
+        frame: np.ndarray,
+        person_bbox: Tuple[int, int, int, int],
+        zones_data: List[Tuple[int, List[Tuple[int, int]], int]]
     ) -> None:
         """Handle zone violation.
         
@@ -353,6 +368,8 @@ class DetectionPage(QWidget):
             zone_id: Zone identifier
             relay_id: Relay identifier
             frame: Frame with violation
+            person_bbox: Person bounding box (x1, y1, x2, y2)
+            zones_data: List of (zone_id, points, relay_id) tuples
         """
         logger.warning(
             f"VIOLATION DETECTED: Camera {camera_id}, Zone {zone_id}, Relay {relay_id}"
@@ -367,25 +384,91 @@ class DetectionPage(QWidget):
             logger.debug(f"Relay {relay_id} in cooldown")
         
         # Save snapshot
-        self._save_snapshot(camera_id, zone_id, relay_id, frame)
+        self._save_snapshot(camera_id, zone_id, relay_id, frame, person_bbox, zones_data)
     
     def _save_snapshot(
         self,
         camera_id: int,
         zone_id: int,
         relay_id: int,
-        frame: np.ndarray
+        frame: np.ndarray,
+        person_bbox: Tuple[int, int, int, int],
+        zones_data: List[Tuple[int, List[Tuple[int, int]], int]]
     ) -> None:
-        """Save violation snapshot."""
+        """Save violation snapshot with zone boundaries and violating person bounding box drawn."""
         try:
+            # Create a copy to avoid modifying the original frame
+            snapshot_frame = frame.copy()
+            
+            logger.debug(f"Saving snapshot - Frame shape: {snapshot_frame.shape}, Camera: {camera_id}, Zones count: {len(zones_data)}")
+            
+            # Draw zone boundaries on the snapshot using zones_data passed from detection worker
+            for zone_id_iter, points, relay_id_iter in zones_data:
+                logger.debug(f"Processing zone {zone_id_iter}, points: {len(points) if points else 0}")
+                
+                if not points or len(points) < 2:
+                    logger.debug(f"Skipping zone {zone_id_iter} - insufficient points")
+                    continue
+                
+                # Convert points to numpy array for cv2.polylines
+                pts = np.array(points, np.int32)
+                pts = pts.reshape((-1, 1, 2))
+                
+                # Use bright red (BGR: 0,0,255 = pure red) for violated zone, or default color
+                if zone_id_iter == zone_id:
+                    # This is the violated zone - highlight in bright red
+                    draw_color = (0, 0, 255)  # Pure red in BGR
+                    border_width = 4
+                    logger.debug(f"Drawing violated zone {zone_id_iter} in red")
+                else:
+                    # Other zones in green for reference
+                    draw_color = (0, 255, 0)  # Green in BGR
+                    border_width = 2
+                    logger.debug(f"Drawing zone {zone_id_iter} in green")
+                
+                # Draw polygon outline
+                cv2.polylines(snapshot_frame, [pts], True, draw_color, border_width)
+                
+                # Add zone label
+                if len(points) > 0:
+                    label = f"Zone {zone_id_iter}"
+                    if zone_id_iter == zone_id:
+                        label += " [VIOLATION]"
+                    cv2.putText(
+                        snapshot_frame,
+                        label,
+                        (int(points[0][0]) + 5, int(points[0][1]) - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        draw_color,
+                        2
+                    )
+            
+            # Draw the violating person's bounding box
+            x1, y1, x2, y2 = person_bbox
+            logger.debug(f"Drawing person bbox: ({x1}, {y1}, {x2}, {y2})")
+            
+            # Draw bounding box in pure red (BGR: 0,0,255)
+            cv2.rectangle(snapshot_frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 0, 255), 3)
+            # Add label for the violating person
+            cv2.putText(
+                snapshot_frame,
+                "Violating Person",
+                (int(x1), int(y1) - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 0, 255),
+                2
+            )
+            
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             filename = f"violation_cam{camera_id}_zone{zone_id}_relay{relay_id}_{timestamp}.jpg"
             filepath = self.snapshot_dir / filename
             
-            cv2.imwrite(str(filepath), frame)
-            logger.info(f"Snapshot saved: {filename}")
+            cv2.imwrite(str(filepath), snapshot_frame)
+            logger.info(f"Snapshot saved with zone boundaries and person bbox: {filename}")
         except Exception as e:
-            logger.error(f"Failed to save snapshot: {e}")
+            logger.error(f"Failed to save snapshot: {e}", exc_info=True)
     
     def _update_displays(self) -> None:
         """Update video displays and statistics."""
@@ -393,6 +476,16 @@ class DetectionPage(QWidget):
             frame = self.camera_manager.get_latest_frame(camera_id)
             if frame is not None:
                 video_panel.update_frame(frame)
+                
+                # Update detected persons
+                if camera_id in self.detection_workers:
+                    persons = self.detection_workers[camera_id].get_latest_persons()
+                    video_panel.set_persons(persons)
+                    
+                    # Update zone violations (for color change)
+                    violations = self.detection_workers[camera_id].get_violations()
+                    violation_dict = {zone_id: True for zone_id in violations}
+                    video_panel.set_zone_violations(violation_dict)
                 
                 # Update info
                 cap_fps = self.camera_manager.get_fps(camera_id)

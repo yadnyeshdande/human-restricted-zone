@@ -1,5 +1,13 @@
 human_env_py310
 logs
 snapshots
-__pycache__
+**/__pycache__/
+__pycache__/
+*.py[cod]
 *.pyc
+src/Camera/__pycache__
+src/config/__pycache__
+src/detection/__pycache__
+src/relay/__pycache__
+src/utils/__pycache__
+src/ui/__pycache__

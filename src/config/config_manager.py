@@ -75,8 +75,17 @@ class ConfigManager:
     
     def add_camera(self, rtsp_url: str) -> Camera:
         """Add a new camera."""
-        camera = Camera(id=self._next_camera_id, rtsp_url=rtsp_url)
-        self._next_camera_id += 1
+        # Find the lowest available camera ID (reuse deleted camera IDs)
+        used_camera_ids = {camera.id for camera in self.config.cameras}
+        camera_id = 1
+        while camera_id in used_camera_ids:
+            camera_id += 1
+        
+        camera = Camera(id=camera_id, rtsp_url=rtsp_url)
+        
+        # Update counter for future reference
+        self._next_camera_id = max(self._next_camera_id, camera_id + 1)
+        
         self.config.cameras.append(camera)
         logger.info(f"Added camera {camera.id}: {rtsp_url}")
         return camera
@@ -104,13 +113,28 @@ class ConfigManager:
         if camera is None:
             return None
         
+        # Find the lowest available zone ID (reuse deleted zone IDs)
+        used_zone_ids = {zone.id for zone in camera.zones}
+        zone_id = 1
+        while zone_id in used_zone_ids:
+            zone_id += 1
+        
+        # Find the lowest available relay ID (reuse deleted relay IDs)
+        all_zones = [z for c in self.config.cameras for z in c.zones]
+        used_relay_ids = {zone.relay_id for zone in all_zones}
+        relay_id = 1
+        while relay_id in used_relay_ids:
+            relay_id += 1
+        
         zone = Zone(
-            id=self._next_zone_id,
+            id=zone_id,
             points=points,
-            relay_id=self._next_relay_id
+            relay_id=relay_id
         )
-        self._next_zone_id += 1
-        self._next_relay_id += 1
+        
+        # Update counters for future reference
+        self._next_zone_id = max(self._next_zone_id, zone_id + 1)
+        self._next_relay_id = max(self._next_relay_id, relay_id + 1)
         
         camera.zones.append(zone)
         logger.info(f"Added zone {zone.id} to camera {camera_id}, assigned relay {zone.relay_id}")

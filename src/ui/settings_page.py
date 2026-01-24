@@ -359,10 +359,10 @@ class SettingsPage(QWidget):
             # SYNC: Update human_boundaries.json if resolution changed
             # ========================================
             if resolution_changed:
-                logger.info(f"Resolution changed: {old_resolution} → {new_resolution}")
+                logger.info(f"Resolution changed: {old_resolution} -> {new_resolution}")
                 self.config_manager.update_processing_resolution(new_resolution)
                 self.config_manager.save()
-                logger.info("✓ Zones rescaled and saved to human_boundaries.json")
+                logger.info("[OK] Zones rescaled and saved to human_boundaries.json")
             
             self.status_label.setText("Settings saved successfully!")
             self.status_label.setStyleSheet("color: green; font-weight: bold;")
@@ -499,7 +499,7 @@ class SettingsPage(QWidget):
             # Model exists locally
             size_mb = model_file.stat().st_size / (1024 * 1024)
             self.model_status_label.setText(
-                f"Status: ✓ Loaded ({size_mb:.1f} MB)"
+                f"Status: [OK] Loaded ({size_mb:.1f} MB)"
             )
             self.model_status_label.setStyleSheet("color: green; font-size: 9px; font-weight: bold;")
         else:
@@ -522,7 +522,7 @@ class SettingsPage(QWidget):
             QMessageBox.information(
                 self,
                 "Model Status",
-                f"✓ Model already downloaded!\n\n"
+                f"[OK] Model already downloaded!\n\n"
                 f"Model: {model_name}\n"
                 f"Size: {size_mb:.1f} MB\n"
                 f"Location: {model_file}"
@@ -598,14 +598,14 @@ class SettingsPage(QWidget):
                 if cached_model.exists():
                     target_model = models_dir / model_name
                     shutil.copy2(cached_model, target_model)
-                    logger.info(f"✓ Model copied to {target_model}")
+                    logger.info(f"[OK] Model copied to {target_model}")
             else:
                 # If ultralytics cache doesn't exist, try to get from model object
 
                 if hasattr(model, 'pt') and model.pt:
                     target_model = models_dir / model_name
                     # The model weights are already loaded, so this is successful
-                    logger.info(f"✓ Model {model_name} loaded successfully")
+                    logger.info(f"[OK] Model {model_name} loaded successfully")
             
             progress.close()
             
@@ -615,13 +615,13 @@ class SettingsPage(QWidget):
             QMessageBox.information(
                 self,
                 "Download Complete",
-                f"✓ Model '{model_name}' downloaded successfully!\n\n"
+                f"[OK] Model '{model_name}' downloaded successfully!\n\n"
                 f"Location: {models_dir / model_name}\n\n"
                 f"You can now use this model in the application.\n"
                 f"Remember to save settings and restart the application."
             )
             
-            logger.info(f"✓ Download complete for {model_name}")
+            logger.info(f"[OK] Download complete for {model_name}")
             
         except Exception as e:
             logger.error(f"Failed to download model {model_name}: {e}")

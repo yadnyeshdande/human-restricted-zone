@@ -8,7 +8,6 @@ import time
 import threading
 from typing import Dict, Optional
 from .relay_interface import RelayInterface
-from .relay_simulator import RelaySimulator
 from utils.logger import get_logger
 
 logger = get_logger("RelayManager")
@@ -20,17 +19,20 @@ class RelayManager:
     def __init__(
         self,
         interface: Optional[RelayInterface] = None,
-        cooldown: float = 5.0,
+        cooldown: float = 0.5,
         activation_duration: float = 1.0
     ):
         """Initialize relay manager.
         
         Args:
-            interface: Relay hardware interface (None = simulator)
+            interface: Relay hardware interface (USB relay). If None, relay will be disabled.
             cooldown: Minimum time between activations (seconds)
             activation_duration: How long to keep relay active (seconds)
         """
-        self.interface = interface or RelaySimulator()
+        self.interface = interface
+        if interface is None:
+            logger.warning("No relay interface configured. Relay operations will be disabled.")
+            logger.warning("To enable relay, configure USB relay hardware in app_settings.json")
         self.cooldown = cooldown
         self.activation_duration = activation_duration
         
@@ -47,6 +49,11 @@ class RelayManager:
         Returns:
             True if relay was triggered
         """
+        # Check if interface is available
+        if self.interface is None:
+            logger.debug(f"Relay {relay_id} trigger requested but no interface configured")
+            return False
+        
         with self.lock:
             current_time = time.time()
             last_time = self.last_activation.get(relay_id, 0)
@@ -59,8 +66,12 @@ class RelayManager:
                 )
                 return False
             
-            # Activate relay
-            success = self.interface.activate(relay_id, self.activation_duration)
+            # Activate relay with error handling
+            try:
+                success = self.interface.activate(relay_id, self.activation_duration)
+            except Exception as e:
+                logger.error(f"Failed to activate relay {relay_id}: {e}")
+                return False
             
             if success:
                 self.last_activation[relay_id] = current_time

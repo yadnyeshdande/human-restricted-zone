@@ -507,7 +507,6 @@ class TeachingPage(QWidget):
                     # because we are inside the timer loop where the latest size is known.
                     if zone_editor.geometry() != target_rect:
                         zone_editor.setGeometry(target_rect)
-                        self._update_zone_visuals(camera_id)
 
                 # Update info
                 fps = self.camera_manager.get_fps(camera_id)

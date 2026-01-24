@@ -1,15 +1,38 @@
 {
   "app_version": "1.0.0",
-  "timestamp": "2026-01-25T01:43:52.103754",
+  "timestamp": "2026-01-25T04:48:53.023418",
   "processing_resolution": [
-    1280,
-    720
+    1920,
+    1080
   ],
   "cameras": [
     {
       "id": 1,
       "rtsp_url": "rtsp://admin:Pass_123@192.168.1.64:554/stream",
-      "zones": []
+      "zones": [
+        {
+          "id": 1,
+          "points": [
+            [
+              0,
+              3
+            ],
+            [
+              0,
+              866
+            ],
+            [
+              1919,
+              772
+            ],
+            [
+              1919,
+              30
+            ]
+          ],
+          "relay_id": 1
+        }
+      ]
     }
   ]
 }

@@ -117,7 +117,10 @@ def main():
                 logger.info("Using pyhid_usb_relay hardware")
             except Exception as e:
                 logger.error(f"Failed to initialize USB relay: {e}")
-                logger.error("Falling back to relay simulator")
+                logger.error("Relay will be disabled. Detection will still work but relays won't activate.")
+                relay_interface = None
+        else:
+            logger.info("USB relay disabled in app_settings.json")
         
         relay_manager = RelayManager(
             interface=relay_interface,

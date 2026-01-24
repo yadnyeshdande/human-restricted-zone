@@ -15,7 +15,8 @@ logger = get_logger("Detector")
 class PersonDetector:
     """YOLO-based person detector."""
     
-    PERSON_CLASS_ID = 0
+    PERSON_CLASS_ID = 0  # In COCO dataset, class 0 is always "person"
+    PERSON_CLASS_NAME = "person"  # Fallback verification
     MODELS_DIR = Path(__file__).parent.parent.parent / "models"  # Project root/models/
     
     def __init__(self, model_name: str = None, conf_threshold: float = None):
@@ -73,6 +74,9 @@ class PersonDetector:
                     logger.error(f"Failed to download model: {e}")
                     raise
             
+            # Verify model has person class
+            self._verify_person_class()
+            
             # Try to use CUDA if available
             try:
                 import torch
@@ -89,9 +93,51 @@ class PersonDetector:
             self.model_loaded = False
             raise
     
+    def _verify_person_class(self) -> None:
+        """Verify that the loaded model has person class at ID 0."""
+        if self.model is None:
+            return
+        
+        try:
+            # Get model class names
+            class_names = self.model.names
+            
+            if class_names is None:
+                logger.warning("Could not verify person class - model has no class names")
+                return
+            
+            # Verify class 0 exists and is "person"
+            if self.PERSON_CLASS_ID not in class_names:
+                logger.error(f"[ERROR] Class ID {self.PERSON_CLASS_ID} not found in model classes")
+                logger.error(f"Available classes: {list(class_names.values())}")
+                raise ValueError(f"Model does not have person class at ID {self.PERSON_CLASS_ID}")
+            
+            class_name = class_names[self.PERSON_CLASS_ID]
+            if class_name.lower() != self.PERSON_CLASS_NAME.lower():
+                logger.warning(f"Class {self.PERSON_CLASS_ID} is '{class_name}', not '{self.PERSON_CLASS_NAME}'")
+                logger.warning("This may cause unexpected behavior. Ensure YOLO COCO model is used.")
+            else:
+                logger.info(f"[OK] Verified: Class {self.PERSON_CLASS_ID} = '{class_name}'")
+                
+        except Exception as e:
+            logger.error(f"Failed to verify person class: {e}")
+            logger.error("Proceeding with class ID {self.PERSON_CLASS_ID} anyway")
+    
     def is_model_loaded(self) -> bool:
         """Check if model is loaded successfully."""
         return self.model_loaded and self.model is not None
+    
+    def unload_model(self) -> None:
+        """Unload the YOLO model to free up memory and GPU resources."""
+        if self.model is not None:
+            try:
+                # Delete model reference to free memory
+                del self.model
+                self.model = None
+                self.model_loaded = False
+                logger.info(f"Model '{self.model_name}' unloaded to save computational power")
+            except Exception as e:
+                logger.warning(f"Error unloading model: {e}")
     
     def detect_persons(self, frame: np.ndarray) -> List[Tuple[int, int, int, int]]:
         """Detect persons in frame.

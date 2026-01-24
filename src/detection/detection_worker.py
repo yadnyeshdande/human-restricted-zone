@@ -24,7 +24,7 @@ class DetectionWorker(StoppableThread):
         camera_id: int,
         frame_queue: queue.Queue,
         zones: List[Tuple[int, List[Tuple[int, int]], int]],  # [(zone_id, points, relay_id)]
-        on_violation: Callable[[int, int, int, np.ndarray], None]
+        on_violation: Callable[[int, int, int, np.ndarray, Tuple[int, int, int, int], List[Tuple[int, List[Tuple[int, int]], int]]], None]
     ):
         """Initialize detection worker.
         
@@ -41,6 +41,11 @@ class DetectionWorker(StoppableThread):
         self.on_violation = on_violation
         self.fps_counter = FPSCounter()
         self.current_fps = 0.0
+        
+        # Store latest detection results
+        self.latest_persons = []  # Latest detected persons (bounding boxes)
+        self.violation_zones = set()  # Set of zone IDs currently in violation
+        self.prev_violation_zones = set()  # Previous frame's violations for edge detection
         
         try:
             self.detector = PersonDetector()
@@ -71,10 +76,14 @@ class DetectionWorker(StoppableThread):
                 
                 # Run detection
                 persons = self.detector.detect_persons(frame)
+                self.latest_persons = persons  # Store for UI display
                 
                 # Check violations
                 from config.app_settings import SETTINGS
                 from .geometry import bbox_overlaps_polygon, point_in_polygon
+
+                self.prev_violation_zones = self.violation_zones.copy()
+                self.violation_zones.clear()
 
                 for bbox in persons:
                     for zone_id, points, relay_id in self.zones:  # Now receives points instead of rect
@@ -89,11 +98,15 @@ class DetectionWorker(StoppableThread):
                             violation = bbox_overlaps_polygon(bbox, points)
                         
                         if violation:
-                            logger.warning(
-                                f"VIOLATION [{SETTINGS.violation_mode} mode]: "
-                                f"Camera {self.camera_id}, Zone {zone_id}, Relay {relay_id}"
-                            )
-                            self.on_violation(self.camera_id, zone_id, relay_id, frame)
+                            self.violation_zones.add(zone_id)
+                            
+                            # Trigger relay only on NEW violation (not every frame)
+                            if zone_id not in self.prev_violation_zones:
+                                logger.warning(
+                                    f"VIOLATION [{SETTINGS.violation_mode} mode]: "
+                                    f"Camera {self.camera_id}, Zone {zone_id}, Relay {relay_id}"
+                                )
+                                self.on_violation(self.camera_id, zone_id, relay_id, frame, bbox, self.zones)
                             break  # Only trigger once per person
                 
                 # Update FPS
@@ -108,6 +121,19 @@ class DetectionWorker(StoppableThread):
     def get_fps(self) -> float:
         """Get current detection FPS."""
         return self.current_fps
+    
+    def get_latest_persons(self) -> list:
+        """Get latest detected persons (bounding boxes)."""
+        return self.latest_persons
+    
+    def get_violations(self) -> set:
+        """Get set of zone IDs currently in violation."""
+        return self.violation_zones.copy()
+    
+    def unload_model(self) -> None:
+        """Unload the YOLO model to free up memory when detection stops."""
+        if self.detector:
+            self.detector.unload_model()
     
     def update_zones(self, zones: List[Tuple[int, List[Tuple[int, int]], int]]) -> None:
         """Update restricted zones."""
