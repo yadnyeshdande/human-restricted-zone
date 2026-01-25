@@ -123,7 +123,6 @@ def main():
             logger.info("USB relay disabled in app_settings.json")
         
         relay_manager = RelayManager(
-            interface=relay_interface,
             cooldown=SETTINGS.relay_cooldown,
             activation_duration=SETTINGS.relay_duration
         )

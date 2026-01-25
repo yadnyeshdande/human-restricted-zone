@@ -1,4 +1,5 @@
 human_env_py310
+myenv
 logs
 snapshots
 **/__pycache__/

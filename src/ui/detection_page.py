@@ -375,13 +375,22 @@ class DetectionPage(QWidget):
             f"VIOLATION DETECTED: Camera {camera_id}, Zone {zone_id}, Relay {relay_id}"
         )
         
-        # Trigger relay
-        triggered = self.relay_manager.trigger(relay_id)
-        
-        if triggered:
-            logger.info(f"Relay {relay_id} triggered")
+        # Trigger relay using flexible relay manager
+        if relay_id in self.relay_manager.available_channels:
+            triggered = self.relay_manager.set_state(
+                relay_id,
+                True,
+                reason=f"Zone {zone_id} violation (Camera {camera_id})"
+            )
+            
+            if triggered:
+                logger.info(f"Relay {relay_id} triggered for zone violation")
+            else:
+                logger.debug(f"Relay {relay_id} in cooldown")
         else:
-            logger.debug(f"Relay {relay_id} in cooldown")
+            logger.warning(
+                f"Relay {relay_id} not available. Available: {self.relay_manager.available_channels}"
+            )
         
         # Save snapshot
         self._save_snapshot(camera_id, zone_id, relay_id, frame, person_bbox, zones_data)
