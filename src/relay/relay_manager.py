@@ -390,19 +390,7 @@ class RelayManager:
             logger.info(f"Testing relay channel {channel}...")
             
             with self.lock:
-                # Step 1: Ensure relay is OFF before test
-                # Read current state (may be cached)
-                try:
-                    current_state = self.device.state
-                    is_on = bool(current_state & (1 << (channel - 1)))
-                    if is_on:
-                        logger.debug(f"Test {channel}: Initial state is ON, toggling OFF first")
-                        self.device.toggle_state(channel)
-                        time.sleep(0.2)
-                except Exception:
-                    pass  # If state read fails, just proceed
-                
-                # Step 2: Toggle ON for test
+                # Step 1: Toggle ON for test
                 logger.debug(f"Test {channel}: Toggling ON")
                 self.channel_states[channel] = True
                 self.device.toggle_state(channel)
@@ -411,7 +399,7 @@ class RelayManager:
             # Keep ON for test duration
             time.sleep(duration)
             
-            # Step 3: Toggle OFF (just toggle once, don't verify - avoids cached state issue)
+            # Step 2: Toggle OFF
             with self.lock:
                 logger.debug(f"Test {channel}: Toggling OFF")
                 self.channel_states[channel] = False
