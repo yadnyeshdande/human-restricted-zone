@@ -447,9 +447,8 @@ class RelayManager:
     def safe_off(self) -> None:
         """Turn all relays OFF immediately (emergency stop).
         
-        IMPORTANT: We toggle OFF once per relay and trust it works.
-        Do NOT verify with device.state because it's cached/stale and can
-        cause us to toggle back ON thinking the relay is still ON.
+        Only toggle relays that we think are ON (based on channel_states tracking).
+        Don't toggle relays that are already OFF to avoid toggling them back ON.
         """
         if not self.device or not self.available_channels:
             logger.debug("No relay device or channels - skipping safe off")
@@ -457,16 +456,22 @@ class RelayManager:
         
         try:
             with self.lock:
-                logger.info(f"Safe OFF: Turning OFF {len(self.available_channels)} relays")
+                logger.info(f"Safe OFF: Checking and turning OFF relays")
                 
                 for ch in self.available_channels:
+                    # Only toggle if we think the relay is ON
+                    if self.channel_states.get(ch, False):
+                        try:
+                            logger.info(f"Safe OFF: Relay {ch} is ON, toggling OFF")
+                            self.device.toggle_state(ch)
+                            time.sleep(0.1)
+                        except Exception as e:
+                            logger.error(f"Failed to toggle relay {ch} OFF: {e}")
+                    else:
+                        logger.debug(f"Safe OFF: Relay {ch} already OFF, skipping")
+                    
+                    # Mark all as OFF in our tracking
                     self.channel_states[ch] = False
-                    try:
-                        logger.debug(f"Safe OFF: Toggle OFF relay {ch}")
-                        self.device.toggle_state(ch)
-                        time.sleep(0.1)
-                    except Exception as e:
-                        logger.error(f"Failed to toggle relay {ch} OFF: {e}")
             
             logger.warning("All relays turned OFF (safe off)")
         except Exception as e:
