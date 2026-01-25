@@ -447,8 +447,9 @@ class RelayManager:
     def safe_off(self) -> None:
         """Turn all relays OFF immediately (emergency stop).
         
-        CRITICAL: This uses toggle-then-verify approach to handle cached device.state.
-        We toggle OFF and verify, then toggle again if still ON.
+        IMPORTANT: We toggle OFF once per relay and trust it works.
+        Do NOT verify with device.state because it's cached/stale and can
+        cause us to toggle back ON thinking the relay is still ON.
         """
         if not self.device or not self.available_channels:
             logger.debug("No relay device or channels - skipping safe off")
@@ -456,50 +457,16 @@ class RelayManager:
         
         try:
             with self.lock:
-                logger.debug(f"Safe OFF: Starting shutdown sequence for {len(self.available_channels)} relays")
+                logger.info(f"Safe OFF: Turning OFF {len(self.available_channels)} relays")
                 
-                # Attempt 1: Toggle all relays OFF
                 for ch in self.available_channels:
                     self.channel_states[ch] = False
                     try:
                         logger.debug(f"Safe OFF: Toggle OFF relay {ch}")
                         self.device.toggle_state(ch)
-                        time.sleep(0.1)  # Wait for toggle to complete
+                        time.sleep(0.1)
                     except Exception as e:
-                        logger.error(f"Failed to toggle relay {ch}: {e}")
-                
-                # Wait a bit for device to update
-                time.sleep(0.2)
-                
-                # Verify all relays are OFF
-                try:
-                    final_state = self.device.state
-                    logger.debug(f"Safe OFF: Device state after toggles = {bin(final_state)}")
-                    
-                    # Check if any relay is still ON
-                    still_on = []
-                    for ch in self.available_channels:
-                        is_on = bool(final_state & (1 << (ch - 1)))
-                        if is_on:
-                            still_on.append(ch)
-                    
-                    # If any relay is still ON, toggle them again
-                    if still_on:
-                        logger.warning(f"Safe OFF: Relays still ON: {still_on}, toggling again")
-                        for ch in still_on:
-                            try:
-                                logger.debug(f"Safe OFF: Second attempt - Toggle OFF relay {ch}")
-                                self.device.toggle_state(ch)
-                                time.sleep(0.1)
-                            except Exception as e:
-                                logger.error(f"Failed to toggle relay {ch} (2nd attempt): {e}")
-                        
-                        time.sleep(0.2)
-                        final_state = self.device.state
-                        logger.debug(f"Safe OFF: Final device state = {bin(final_state)}")
-                    
-                except Exception as e:
-                    logger.warning(f"Could not verify final state: {e}")
+                        logger.error(f"Failed to toggle relay {ch} OFF: {e}")
             
             logger.warning("All relays turned OFF (safe off)")
         except Exception as e:
