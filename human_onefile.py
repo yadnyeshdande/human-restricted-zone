@@ -168,6 +168,11 @@ class CameraWorker(StoppableThread):
                 return True
             else:
                 logger.error(f"Camera {self.camera_id} failed to open")
+                logger.error(f"  URL: {self.rtsp_url}")
+                logger.error(f"  Check: 1) URL format is correct")
+                logger.error(f"  Check: 2) Username:password are correct (no double colons)")
+                logger.error(f"  Check: 3) Camera IP and port are accessible")
+                logger.error(f"  Check: 4) Camera may block connections after multiple failed attempts")
                 self.is_connected = False
                 return False
                 
@@ -253,7 +258,8 @@ class ReconnectPolicy:
         self,
         initial_delay: float = 1.0,
         max_delay: float = 60.0,
-        backoff_factor: float = 2.0
+        backoff_factor: float = 2.0,
+        max_attempts: int = 10
     ):
         """Initialize reconnect policy.
         
@@ -261,19 +267,39 @@ class ReconnectPolicy:
             initial_delay: Initial delay in seconds
             max_delay: Maximum delay in seconds
             backoff_factor: Multiplier for each retry
+            max_attempts: Maximum reconnection attempts before requiring manual reset
         """
         self.initial_delay = initial_delay
         self.max_delay = max_delay
         self.backoff_factor = backoff_factor
+        self.max_attempts = max_attempts
         self.current_delay = initial_delay
         self.attempt = 0
+        self.is_exhausted = False
     
     def wait(self) -> None:
         """Wait before next reconnection attempt."""
-        logger.info(f"Reconnect attempt {self.attempt + 1}, waiting {self.current_delay:.1f}s")
+        if self.is_exhausted:
+            logger.warning(f"Reconnection exhausted - maximum attempts ({self.max_attempts}) reached")
+            logger.warning(f"Please check camera URL and credentials, then restart application")
+            time.sleep(self.max_delay)  # Wait at max delay
+            return
+        
+        logger.info(f"Reconnect attempt {self.attempt + 1}/{self.max_attempts}, waiting {self.current_delay:.1f}s")
         time.sleep(self.current_delay)
         
         self.attempt += 1
+        
+        # Check if we've exhausted attempts
+        if self.attempt >= self.max_attempts:
+            self.is_exhausted = True
+            logger.error(f"Reconnection exhausted after {self.max_attempts} attempts")
+            logger.error(f"This usually means:")
+            logger.error(f"  1) RTSP credentials are incorrect (check username:password format)")
+            logger.error(f"  2) Camera IP address or port is wrong")
+            logger.error(f"  3) Camera has blocked connections (may need restart or time to unblock)")
+            return
+        
         self.current_delay = min(
             self.current_delay * self.backoff_factor,
             self.max_delay
@@ -283,6 +309,7 @@ class ReconnectPolicy:
         """Reset policy after successful connection."""
         self.current_delay = self.initial_delay
         self.attempt = 0
+        self.is_exhausted = False
 
 # =============================================================================
 # ADDITIONAL FILE: config/app_settings.py (ADD THIS NEW FILE)
@@ -836,7 +863,6 @@ If you get permission errors on Linux, create a udev rule:
 5. Test with:
    pyhid-usb-relay enum
 """
-
 # =============================================================================
 # File: config/config_manager.py
 # =============================================================================
@@ -914,8 +940,17 @@ class ConfigManager:
     
     def add_camera(self, rtsp_url: str) -> Camera:
         """Add a new camera."""
-        camera = Camera(id=self._next_camera_id, rtsp_url=rtsp_url)
-        self._next_camera_id += 1
+        # Find the lowest available camera ID (reuse deleted camera IDs)
+        used_camera_ids = {camera.id for camera in self.config.cameras}
+        camera_id = 1
+        while camera_id in used_camera_ids:
+            camera_id += 1
+        
+        camera = Camera(id=camera_id, rtsp_url=rtsp_url)
+        
+        # Update counter for future reference
+        self._next_camera_id = max(self._next_camera_id, camera_id + 1)
+        
         self.config.cameras.append(camera)
         logger.info(f"Added camera {camera.id}: {rtsp_url}")
         return camera
@@ -943,13 +978,28 @@ class ConfigManager:
         if camera is None:
             return None
         
+        # Find the lowest available zone ID (reuse deleted zone IDs)
+        used_zone_ids = {zone.id for zone in camera.zones}
+        zone_id = 1
+        while zone_id in used_zone_ids:
+            zone_id += 1
+        
+        # Find the lowest available relay ID (reuse deleted relay IDs)
+        all_zones = [z for c in self.config.cameras for z in c.zones]
+        used_relay_ids = {zone.relay_id for zone in all_zones}
+        relay_id = 1
+        while relay_id in used_relay_ids:
+            relay_id += 1
+        
         zone = Zone(
-            id=self._next_zone_id,
+            id=zone_id,
             points=points,
-            relay_id=self._next_relay_id
+            relay_id=relay_id
         )
-        self._next_zone_id += 1
-        self._next_relay_id += 1
+        
+        # Update counters for future reference
+        self._next_zone_id = max(self._next_zone_id, zone_id + 1)
+        self._next_relay_id = max(self._next_relay_id, relay_id + 1)
         
         camera.zones.append(zone)
         logger.info(f"Added zone {zone.id} to camera {camera_id}, assigned relay {zone.relay_id}")
@@ -1165,7 +1215,7 @@ class DetectionWorker(StoppableThread):
         camera_id: int,
         frame_queue: queue.Queue,
         zones: List[Tuple[int, List[Tuple[int, int]], int]],  # [(zone_id, points, relay_id)]
-        on_violation: Callable[[int, int, int, np.ndarray], None]
+        on_violation: Callable[[int, int, int, np.ndarray, Tuple[int, int, int, int], List[Tuple[int, List[Tuple[int, int]], int]]], None]
     ):
         """Initialize detection worker.
         
@@ -1182,6 +1232,11 @@ class DetectionWorker(StoppableThread):
         self.on_violation = on_violation
         self.fps_counter = FPSCounter()
         self.current_fps = 0.0
+        
+        # Store latest detection results
+        self.latest_persons = []  # Latest detected persons (bounding boxes)
+        self.violation_zones = set()  # Set of zone IDs currently in violation
+        self.prev_violation_zones = set()  # Previous frame's violations for edge detection
         
         try:
             self.detector = PersonDetector()
@@ -1212,10 +1267,14 @@ class DetectionWorker(StoppableThread):
                 
                 # Run detection
                 persons = self.detector.detect_persons(frame)
+                self.latest_persons = persons  # Store for UI display
                 
                 # Check violations
                 from config.app_settings import SETTINGS
                 from .geometry import bbox_overlaps_polygon, point_in_polygon
+
+                self.prev_violation_zones = self.violation_zones.copy()
+                self.violation_zones.clear()
 
                 for bbox in persons:
                     for zone_id, points, relay_id in self.zones:  # Now receives points instead of rect
@@ -1230,11 +1289,15 @@ class DetectionWorker(StoppableThread):
                             violation = bbox_overlaps_polygon(bbox, points)
                         
                         if violation:
-                            logger.warning(
-                                f"VIOLATION [{SETTINGS.violation_mode} mode]: "
-                                f"Camera {self.camera_id}, Zone {zone_id}, Relay {relay_id}"
-                            )
-                            self.on_violation(self.camera_id, zone_id, relay_id, frame)
+                            self.violation_zones.add(zone_id)
+                            
+                            # Trigger relay only on NEW violation (not every frame)
+                            if zone_id not in self.prev_violation_zones:
+                                logger.warning(
+                                    f"VIOLATION [{SETTINGS.violation_mode} mode]: "
+                                    f"Camera {self.camera_id}, Zone {zone_id}, Relay {relay_id}"
+                                )
+                                self.on_violation(self.camera_id, zone_id, relay_id, frame, bbox, self.zones)
                             break  # Only trigger once per person
                 
                 # Update FPS
@@ -1249,6 +1312,19 @@ class DetectionWorker(StoppableThread):
     def get_fps(self) -> float:
         """Get current detection FPS."""
         return self.current_fps
+    
+    def get_latest_persons(self) -> list:
+        """Get latest detected persons (bounding boxes)."""
+        return self.latest_persons
+    
+    def get_violations(self) -> set:
+        """Get set of zone IDs currently in violation."""
+        return self.violation_zones.copy()
+    
+    def unload_model(self) -> None:
+        """Unload the YOLO model to free up memory when detection stops."""
+        if self.detector:
+            self.detector.unload_model()
     
     def update_zones(self, zones: List[Tuple[int, List[Tuple[int, int]], int]]) -> None:
         """Update restricted zones."""
@@ -1272,7 +1348,8 @@ logger = get_logger("Detector")
 class PersonDetector:
     """YOLO-based person detector."""
     
-    PERSON_CLASS_ID = 0
+    PERSON_CLASS_ID = 0  # In COCO dataset, class 0 is always "person"
+    PERSON_CLASS_NAME = "person"  # Fallback verification
     MODELS_DIR = Path(__file__).parent.parent.parent / "models"  # Project root/models/
     
     def __init__(self, model_name: str = None, conf_threshold: float = None):
@@ -1330,6 +1407,9 @@ class PersonDetector:
                     logger.error(f"Failed to download model: {e}")
                     raise
             
+            # Verify model has person class
+            self._verify_person_class()
+            
             # Try to use CUDA if available
             try:
                 import torch
@@ -1346,9 +1426,51 @@ class PersonDetector:
             self.model_loaded = False
             raise
     
+    def _verify_person_class(self) -> None:
+        """Verify that the loaded model has person class at ID 0."""
+        if self.model is None:
+            return
+        
+        try:
+            # Get model class names
+            class_names = self.model.names
+            
+            if class_names is None:
+                logger.warning("Could not verify person class - model has no class names")
+                return
+            
+            # Verify class 0 exists and is "person"
+            if self.PERSON_CLASS_ID not in class_names:
+                logger.error(f"[ERROR] Class ID {self.PERSON_CLASS_ID} not found in model classes")
+                logger.error(f"Available classes: {list(class_names.values())}")
+                raise ValueError(f"Model does not have person class at ID {self.PERSON_CLASS_ID}")
+            
+            class_name = class_names[self.PERSON_CLASS_ID]
+            if class_name.lower() != self.PERSON_CLASS_NAME.lower():
+                logger.warning(f"Class {self.PERSON_CLASS_ID} is '{class_name}', not '{self.PERSON_CLASS_NAME}'")
+                logger.warning("This may cause unexpected behavior. Ensure YOLO COCO model is used.")
+            else:
+                logger.info(f"[OK] Verified: Class {self.PERSON_CLASS_ID} = '{class_name}'")
+                
+        except Exception as e:
+            logger.error(f"Failed to verify person class: {e}")
+            logger.error("Proceeding with class ID {self.PERSON_CLASS_ID} anyway")
+    
     def is_model_loaded(self) -> bool:
         """Check if model is loaded successfully."""
         return self.model_loaded and self.model is not None
+    
+    def unload_model(self) -> None:
+        """Unload the YOLO model to free up memory and GPU resources."""
+        if self.model is not None:
+            try:
+                # Delete model reference to free memory
+                del self.model
+                self.model = None
+                self.model_loaded = False
+                logger.info(f"Model '{self.model_name}' unloaded to save computational power")
+            except Exception as e:
+                logger.warning(f"Error unloading model: {e}")
     
     def detect_persons(self, frame: np.ndarray) -> List[Tuple[int, int, int, int]]:
         """Detect persons in frame.
@@ -1619,7 +1741,6 @@ import time
 import threading
 from typing import Dict, Optional
 from .relay_interface import RelayInterface
-from .relay_simulator import RelaySimulator
 from utils.logger import get_logger
 
 logger = get_logger("RelayManager")
@@ -1631,17 +1752,20 @@ class RelayManager:
     def __init__(
         self,
         interface: Optional[RelayInterface] = None,
-        cooldown: float = 5.0,
+        cooldown: float = 0.5,
         activation_duration: float = 1.0
     ):
         """Initialize relay manager.
         
         Args:
-            interface: Relay hardware interface (None = simulator)
+            interface: Relay hardware interface (USB relay). If None, relay will be disabled.
             cooldown: Minimum time between activations (seconds)
             activation_duration: How long to keep relay active (seconds)
         """
-        self.interface = interface or RelaySimulator()
+        self.interface = interface
+        if interface is None:
+            logger.warning("No relay interface configured. Relay operations will be disabled.")
+            logger.warning("To enable relay, configure USB relay hardware in app_settings.json")
         self.cooldown = cooldown
         self.activation_duration = activation_duration
         
@@ -1658,6 +1782,11 @@ class RelayManager:
         Returns:
             True if relay was triggered
         """
+        # Check if interface is available
+        if self.interface is None:
+            logger.debug(f"Relay {relay_id} trigger requested but no interface configured")
+            return False
+        
         with self.lock:
             current_time = time.time()
             last_time = self.last_activation.get(relay_id, 0)
@@ -1670,8 +1799,12 @@ class RelayManager:
                 )
                 return False
             
-            # Activate relay
-            success = self.interface.activate(relay_id, self.activation_duration)
+            # Activate relay with error handling
+            try:
+                success = self.interface.activate(relay_id, self.activation_duration)
+            except Exception as e:
+                logger.error(f"Failed to activate relay {relay_id}: {e}")
+                return False
             
             if success:
                 self.last_activation[relay_id] = current_time
@@ -1742,6 +1875,7 @@ class RelayManager:
             logger.warning(f"Error during relay shutdown: {e}")
         
         logger.info("  OK: RelayManager shutdown complete")
+
 
 # =============================================================================
 # File: relay/relay_simulator.py
@@ -1975,66 +2109,6 @@ class RelayUSBHID(RelayInterface):
         """Cleanup on deletion."""
         self.close()
 
-# # =============================================================================
-# # ADDITIONAL FILE: relay/relay_usb_hid.py (ADD THIS NEW FILE)
-# # =============================================================================
-# """USB HID relay controller using pyhid_usb_relay library."""
-
-# import time
-# from typing import Dict, Optional
-# from .relay_interface import RelayInterface
-# from utils.logger import get_logger
-
-# logger = get_logger("RelayUSBHID")
-
-
-# class RelayUSBHID(RelayInterface):
-#     """USB HID relay controller using pyhid_usb_relay library.
-    
-#     Install: pip install pyhid_usb_relay
-#     """
-    
-#     def __init__(self, num_channels: int = 8):
-#         """Initialize USB HID relay.
-        
-#         Args:
-#             num_channels: Number of relay channels (default: 8)
-#         """
-#         self.num_channels = num_channels
-#         self.device = None
-#         self.states: Dict[int, bool] = {}
-        
-#         try:
-#             import pyhid_usb_relay
-#             self.relay_lib = pyhid_usb_relay
-#             self._connect()
-#         except ImportError:
-#             logger.error("pyhid_usb_relay not found. Install: pip install pyhid_usb_relay")
-#             raise
-    
-#     def _connect(self) -> bool:
-#         """Connect to USB HID relay device."""
-#         try:
-#             # Find relay device
-#             self.device = self.relay_lib.find()
-#             if not self.device:
-#                 logger.error("No USB relay device found")
-#                 return False
-            
-#             logger.info(f"USB Relay connected: {self.num_channels} channels")
-#             logger.info(f"Current relay state: {self.device.state}")
-            
-#             # Turn off all relays initially
-#             for i in range(1, self.num_channels + 1):
-#                 self.deactivate(i)
-            
-#             return True
-            
-#         except Exception as e:
-#             logger.error(f"Failed to connect USB relay: {e}")
-#             logger.error("Make sure the device is connected and you have permissions")
-#             return False
-
 # =============================================================================
 # File: ui/detection_page.py
 # =============================================================================
@@ -2183,12 +2257,7 @@ class DetectionPage(QWidget):
             self._add_camera_panel(camera.id, camera.rtsp_url)
     
     def _add_camera_panel(self, camera_id: int, rtsp_url: str) -> None:
-        """Add camera panel to grid.
-        
-        Args:
-            camera_id: Camera identifier
-            rtsp_url: RTSP URL
-        """
+        """Add camera panel to grid."""
         # Calculate grid position
         num_cameras = len(self.video_panels)
         cols = 2  # 2 columns
@@ -2198,8 +2267,6 @@ class DetectionPage(QWidget):
         # Dynamically set stretch factors for new row/column
         self.camera_grid.setRowStretch(row, 1)
         self.camera_grid.setColumnStretch(col, 1)
-        
-        # Create container
         
         # Create container
         container = QWidget()
@@ -2272,15 +2339,26 @@ class DetectionPage(QWidget):
             "Initializing detection system...\n\nLoading YOLO model...",
             None,
             0,
-            0
+            0,
+            self
         )
         progress.setWindowTitle("Starting Detection")
         progress.setWindowModality(QtCore.WindowModal)
         progress.setCancelButton(None)
+        progress.setMinimumWidth(400)
+        progress.setMinimumHeight(150)
         progress.show()
+        
+        # Force immediate repaint to ensure dialog is visible
+        progress.repaint()
         
         try:
             cameras = self.config_manager.get_all_cameras()
+            
+            if not cameras:
+                progress.close()
+                QMessageBox.warning(self, "No Cameras", "No cameras configured. Please add cameras first.")
+                return
             
             for idx, camera in enumerate(cameras):
                 progress.setLabelText(
@@ -2301,7 +2379,7 @@ class DetectionPage(QWidget):
                     for zone in camera.zones
                 ]
                 
-               # Create detection worker with proper error handling
+                # Create detection worker with proper error handling
                 try:
                     worker = DetectionWorker(
                         camera_id=camera.id,
@@ -2372,6 +2450,8 @@ class DetectionPage(QWidget):
         logger.info("Stopping detection...")
         
         for camera_id, worker in self.detection_workers.items():
+            # Unload YOLO model to free computational resources
+            worker.unload_model()
             worker.stop()
             worker.join(timeout=5.0)
             logger.info(f"Detection stopped for camera {camera_id}")
@@ -2388,7 +2468,9 @@ class DetectionPage(QWidget):
         camera_id: int,
         zone_id: int,
         relay_id: int,
-        frame: np.ndarray
+        frame: np.ndarray,
+        person_bbox: Tuple[int, int, int, int],
+        zones_data: List[Tuple[int, List[Tuple[int, int]], int]]
     ) -> None:
         """Handle zone violation.
         
@@ -2397,6 +2479,8 @@ class DetectionPage(QWidget):
             zone_id: Zone identifier
             relay_id: Relay identifier
             frame: Frame with violation
+            person_bbox: Person bounding box (x1, y1, x2, y2)
+            zones_data: List of (zone_id, points, relay_id) tuples
         """
         logger.warning(
             f"VIOLATION DETECTED: Camera {camera_id}, Zone {zone_id}, Relay {relay_id}"
@@ -2411,25 +2495,91 @@ class DetectionPage(QWidget):
             logger.debug(f"Relay {relay_id} in cooldown")
         
         # Save snapshot
-        self._save_snapshot(camera_id, zone_id, relay_id, frame)
+        self._save_snapshot(camera_id, zone_id, relay_id, frame, person_bbox, zones_data)
     
     def _save_snapshot(
         self,
         camera_id: int,
         zone_id: int,
         relay_id: int,
-        frame: np.ndarray
+        frame: np.ndarray,
+        person_bbox: Tuple[int, int, int, int],
+        zones_data: List[Tuple[int, List[Tuple[int, int]], int]]
     ) -> None:
-        """Save violation snapshot."""
+        """Save violation snapshot with zone boundaries and violating person bounding box drawn."""
         try:
+            # Create a copy to avoid modifying the original frame
+            snapshot_frame = frame.copy()
+            
+            logger.debug(f"Saving snapshot - Frame shape: {snapshot_frame.shape}, Camera: {camera_id}, Zones count: {len(zones_data)}")
+            
+            # Draw zone boundaries on the snapshot using zones_data passed from detection worker
+            for zone_id_iter, points, relay_id_iter in zones_data:
+                logger.debug(f"Processing zone {zone_id_iter}, points: {len(points) if points else 0}")
+                
+                if not points or len(points) < 2:
+                    logger.debug(f"Skipping zone {zone_id_iter} - insufficient points")
+                    continue
+                
+                # Convert points to numpy array for cv2.polylines
+                pts = np.array(points, np.int32)
+                pts = pts.reshape((-1, 1, 2))
+                
+                # Use bright red (BGR: 0,0,255 = pure red) for violated zone, or default color
+                if zone_id_iter == zone_id:
+                    # This is the violated zone - highlight in bright red
+                    draw_color = (0, 0, 255)  # Pure red in BGR
+                    border_width = 4
+                    logger.debug(f"Drawing violated zone {zone_id_iter} in red")
+                else:
+                    # Other zones in green for reference
+                    draw_color = (0, 255, 0)  # Green in BGR
+                    border_width = 2
+                    logger.debug(f"Drawing zone {zone_id_iter} in green")
+                
+                # Draw polygon outline
+                cv2.polylines(snapshot_frame, [pts], True, draw_color, border_width)
+                
+                # Add zone label
+                if len(points) > 0:
+                    label = f"Zone {zone_id_iter}"
+                    if zone_id_iter == zone_id:
+                        label += " [VIOLATION]"
+                    cv2.putText(
+                        snapshot_frame,
+                        label,
+                        (int(points[0][0]) + 5, int(points[0][1]) - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        draw_color,
+                        2
+                    )
+            
+            # Draw the violating person's bounding box
+            x1, y1, x2, y2 = person_bbox
+            logger.debug(f"Drawing person bbox: ({x1}, {y1}, {x2}, {y2})")
+            
+            # Draw bounding box in pure red (BGR: 0,0,255)
+            cv2.rectangle(snapshot_frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 0, 255), 3)
+            # Add label for the violating person
+            cv2.putText(
+                snapshot_frame,
+                "Violating Person",
+                (int(x1), int(y1) - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 0, 255),
+                2
+            )
+            
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             filename = f"violation_cam{camera_id}_zone{zone_id}_relay{relay_id}_{timestamp}.jpg"
             filepath = self.snapshot_dir / filename
             
-            cv2.imwrite(str(filepath), frame)
-            logger.info(f"Snapshot saved: {filename}")
+            cv2.imwrite(str(filepath), snapshot_frame)
+            logger.info(f"Snapshot saved with zone boundaries and person bbox: {filename}")
         except Exception as e:
-            logger.error(f"Failed to save snapshot: {e}")
+            logger.error(f"Failed to save snapshot: {e}", exc_info=True)
     
     def _update_displays(self) -> None:
         """Update video displays and statistics."""
@@ -2437,6 +2587,16 @@ class DetectionPage(QWidget):
             frame = self.camera_manager.get_latest_frame(camera_id)
             if frame is not None:
                 video_panel.update_frame(frame)
+                
+                # Update detected persons
+                if camera_id in self.detection_workers:
+                    persons = self.detection_workers[camera_id].get_latest_persons()
+                    video_panel.set_persons(persons)
+                    
+                    # Update zone violations (for color change)
+                    violations = self.detection_workers[camera_id].get_violations()
+                    violation_dict = {zone_id: True for zone_id in violations}
+                    video_panel.set_zone_violations(violation_dict)
                 
                 # Update info
                 cap_fps = self.camera_manager.get_fps(camera_id)
@@ -3068,10 +3228,10 @@ class SettingsPage(QWidget):
             # SYNC: Update human_boundaries.json if resolution changed
             # ========================================
             if resolution_changed:
-                logger.info(f"Resolution changed: {old_resolution} → {new_resolution}")
+                logger.info(f"Resolution changed: {old_resolution} -> {new_resolution}")
                 self.config_manager.update_processing_resolution(new_resolution)
                 self.config_manager.save()
-                logger.info("✓ Zones rescaled and saved to human_boundaries.json")
+                logger.info("[OK] Zones rescaled and saved to human_boundaries.json")
             
             self.status_label.setText("Settings saved successfully!")
             self.status_label.setStyleSheet("color: green; font-weight: bold;")
@@ -3208,7 +3368,7 @@ class SettingsPage(QWidget):
             # Model exists locally
             size_mb = model_file.stat().st_size / (1024 * 1024)
             self.model_status_label.setText(
-                f"Status: ✓ Loaded ({size_mb:.1f} MB)"
+                f"Status: [OK] Loaded ({size_mb:.1f} MB)"
             )
             self.model_status_label.setStyleSheet("color: green; font-size: 9px; font-weight: bold;")
         else:
@@ -3231,7 +3391,7 @@ class SettingsPage(QWidget):
             QMessageBox.information(
                 self,
                 "Model Status",
-                f"✓ Model already downloaded!\n\n"
+                f"[OK] Model already downloaded!\n\n"
                 f"Model: {model_name}\n"
                 f"Size: {size_mb:.1f} MB\n"
                 f"Location: {model_file}"
@@ -3307,14 +3467,14 @@ class SettingsPage(QWidget):
                 if cached_model.exists():
                     target_model = models_dir / model_name
                     shutil.copy2(cached_model, target_model)
-                    logger.info(f"✓ Model copied to {target_model}")
+                    logger.info(f"[OK] Model copied to {target_model}")
             else:
                 # If ultralytics cache doesn't exist, try to get from model object
 
                 if hasattr(model, 'pt') and model.pt:
                     target_model = models_dir / model_name
                     # The model weights are already loaded, so this is successful
-                    logger.info(f"✓ Model {model_name} loaded successfully")
+                    logger.info(f"[OK] Model {model_name} loaded successfully")
             
             progress.close()
             
@@ -3324,13 +3484,13 @@ class SettingsPage(QWidget):
             QMessageBox.information(
                 self,
                 "Download Complete",
-                f"✓ Model '{model_name}' downloaded successfully!\n\n"
+                f"[OK] Model '{model_name}' downloaded successfully!\n\n"
                 f"Location: {models_dir / model_name}\n\n"
                 f"You can now use this model in the application.\n"
                 f"Remember to save settings and restart the application."
             )
             
-            logger.info(f"✓ Download complete for {model_name}")
+            logger.info(f"[OK] Download complete for {model_name}")
             
         except Exception as e:
             logger.error(f"Failed to download model {model_name}: {e}")
@@ -3353,7 +3513,7 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton,
     QLabel, QInputDialog, QMessageBox, QScrollArea, QSizePolicy
 )
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRect
 from PyQt5.QtGui import QColor
 from config.config_manager import ConfigManager
 from camera.camera_manager import CameraManager
@@ -3489,6 +3649,46 @@ class TeachingPage(QWidget):
             for zone in camera.zones:
                 self._add_zone_visual(camera.id, zone.id, zone.points, zone.relay_id)
     
+    def _validate_rtsp_url(self, url: str) -> Tuple[bool, str]:
+        """Validate RTSP URL format.
+        
+        Args:
+            url: RTSP URL to validate
+            
+        Returns:
+            Tuple of (is_valid, error_message)
+        """
+        url = url.strip()
+        
+        # Check basic format
+        if not url.startswith('rtsp://'):
+            return False, "URL must start with rtsp://"
+        
+        # Check for @ symbol (indicates credentials)
+        if '@' in url:
+            try:
+                # Parse: rtsp://username:password@host:port/path
+                scheme_end = url.find('://')
+                if scheme_end == -1:
+                    return False, "Invalid URL format"
+                
+                cred_and_host = url[scheme_end + 3:]
+                at_pos = cred_and_host.rfind('@')  # Use rfind to get the last @ (for IPv6 compatibility)
+                
+                if at_pos > 0:
+                    credentials = cred_and_host[:at_pos]
+                    
+                    # Check password format - should have exactly one colon separating username:password
+                    colon_count = credentials.count(':')
+                    if colon_count == 0:
+                        return False, "Credentials must be in format: username:password"
+                    elif colon_count > 1:
+                        return False, "Password contains colons which may cause parsing issues. Use URL encoding if needed."
+            except Exception as e:
+                return False, f"URL parsing error: {str(e)}"
+        
+        return True, ""
+    
     def _add_camera(self) -> None:
         """Add a new camera."""
         rtsp_url, ok = QInputDialog.getText(
@@ -3500,6 +3700,14 @@ class TeachingPage(QWidget):
         
         if not ok or not rtsp_url:
             return
+        
+        # Validate URL
+        is_valid, error_msg = self._validate_rtsp_url(rtsp_url)
+        if not is_valid:
+            QMessageBox.warning(self, "Invalid RTSP URL", error_msg)
+            return
+        
+        rtsp_url = rtsp_url.strip()
         
         # Add to configuration
         camera = self.config_manager.add_camera(rtsp_url)
@@ -3513,7 +3721,12 @@ class TeachingPage(QWidget):
             QMessageBox.warning(self, "Error", f"Failed to connect to camera")
     
     def _add_camera_panel(self, camera_id: int, rtsp_url: str) -> None:
-        """Add camera panel to grid."""
+        """Add camera panel to grid.
+        
+        Args:
+            camera_id: Camera identifier
+            rtsp_url: RTSP URL
+        """
         # Calculate grid position
         num_cameras = len(self.video_panels)
         cols = 2  # 2 columns
@@ -3523,6 +3736,8 @@ class TeachingPage(QWidget):
         # Dynamically set stretch factors for new row/column
         self.camera_grid.setRowStretch(row, 1)
         self.camera_grid.setColumnStretch(col, 1)
+        
+        # Create container
         
         # Create container
         container = QWidget()
@@ -3796,7 +4011,6 @@ class TeachingPage(QWidget):
                     # because we are inside the timer loop where the latest size is known.
                     if zone_editor.geometry() != target_rect:
                         zone_editor.setGeometry(target_rect)
-                        self._update_zone_visuals(camera_id)
 
                 # Update info
                 fps = self.camera_manager.get_fps(camera_id)
@@ -3808,37 +4022,6 @@ class TeachingPage(QWidget):
         """Handle resize."""
         super().resizeEvent(event)
         # Empty! The timer loop handles geometry sync perfectly now.
-    # def _update_frames(self) -> None:
-    #     """Update video frames and sync zone editor geometry."""
-    #     for camera_id, video_panel in self.video_panels.items():
-    #         frame = self.camera_manager.get_latest_frame(camera_id)
-    #         if frame is not None:
-    #             # 1. Update frame first (calculates new scale/offsets)
-    #             video_panel.update_frame(frame)
-                
-    #             # 2. Sync ZoneEditor geometry to match video_label
-    #             if camera_id in self.zone_editors:
-    #                 zone_editor = self.zone_editors[camera_id]
-    #                 target_rect = video_panel.video_label.geometry()
-                    
-    #                 # If video size changed, sync overlay and refresh zones
-    #                 if zone_editor.geometry() != target_rect:
-    #                     zone_editor.setGeometry(target_rect)
-    #                     # Refresh zones with NEW scale from step 1
-    #                     self._update_zone_visuals(camera_id)
-                
-    #             # Update info
-    #             fps = self.camera_manager.get_fps(camera_id)
-    #             connected = self.camera_manager.is_connected(camera_id)
-    #             status = "Connected" if connected else "Disconnected"
-    #             video_panel.update_info(f"Camera {camera_id} | {status} | {fps:.1f} FPS")
-    
-    # def resizeEvent(self, event):
-    #     """Handle resize event - timer will sync geometry."""
-    #     super().resizeEvent(event)
-    #     # The _update_frames timer will handle geometry sync automatically
-    #     # This prevents race conditions with scale calculation
-                    
 
 
 # =============================================================================
@@ -3893,6 +4076,12 @@ class VideoPanel(QWidget):
         # Zones to draw (list of (zone_id, rect, color))
         self.zones = []
         
+        # Person detections (bounding boxes)
+        self.persons = []
+        
+        # Zone violations for highlighting
+        self.zone_violations = {}
+        
         # UI setup
         self._setup_ui()
     
@@ -3921,44 +4110,78 @@ class VideoPanel(QWidget):
         Args:
             frame: BGR frame from OpenCV
         """
+        if frame is None or frame.size == 0:
+            return
+        
         self.current_frame = frame
         self._render_frame()
     
     def _render_frame(self) -> None:
-        """Render frame with zones overlay."""
+        """Render frame with zones overlay and person bounding boxes."""
         if self.current_frame is None:
             return
         
         # Convert BGR to RGB
         frame_rgb = cv2.cvtColor(self.current_frame, cv2.COLOR_BGR2RGB)
         
+        # Draw person bounding boxes from detection results
+        # Store these for reference: self.persons = [(x1, y1, x2, y2), ...]
+        if hasattr(self, 'persons') and self.persons:
+            for x1, y1, x2, y2 in self.persons:
+                # Draw bounding box
+                cv2.rectangle(frame_rgb, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 255), 2)
+                # Draw person label
+                cv2.putText(
+                    frame_rgb,
+                    "Person",
+                    (int(x1), int(y1) - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (0, 255, 255),
+                    2
+                )
+        
         # Draw zones on frame (now polygons instead of rectangles)
         for zone_id, points, color in self.zones:
             if len(points) < 2:
                 continue
+            
+            # Check if this zone is currently violated - if so, use bright red with high visibility
+            is_violated = hasattr(self, 'zone_violations') and zone_id in self.zone_violations
+            if is_violated:
+                draw_color = (255, 0, 0)  # Bright red for violated zones (RGB format since frame is RGB)
+                border_width = 4  # Thicker border to grab attention
+                fill_opacity = 0.35  # Higher opacity to make violation obvious
+            else:
+                draw_color = color  # Use default color if not violated
+                border_width = 2
+                fill_opacity = 0.15
             
             # Convert points to numpy array for cv2.polylines
             pts = np.array(points, np.int32)
             pts = pts.reshape((-1, 1, 2))
             
             # Draw polygon outline
-            cv2.polylines(frame_rgb, [pts], True, color, 2)
+            cv2.polylines(frame_rgb, [pts], True, draw_color, border_width)
             
             # Fill with semi-transparency
             overlay = frame_rgb.copy()
-            cv2.fillPoly(overlay, [pts], color)
-            cv2.addWeighted(overlay, 0.15, frame_rgb, 0.85, 0, frame_rgb)
+            cv2.fillPoly(overlay, [pts], draw_color)
+            cv2.addWeighted(overlay, fill_opacity, frame_rgb, 1 - fill_opacity, 0, frame_rgb)
             
             # Draw zone label at first point
             if len(points) > 0:
+                label = f"Zone {zone_id}"
+                if is_violated:
+                    label += " [VIOLATION]"
                 cv2.putText(
                     frame_rgb,
-                    f"Zone {zone_id}",
+                    label,
                     (int(points[0][0]) + 5, int(points[0][1]) - 5),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    color,
-                    2
+                    0.6 if is_violated else 0.5,
+                    draw_color,
+                    3 if is_violated else 2
                 )
         
         # Convert to QPixmap with aspect ratio preservation
@@ -3970,6 +4193,11 @@ class VideoPanel(QWidget):
         widget_size = self.video_label.size()
         pixmap = QPixmap.fromImage(q_image)
         
+        # Safety check: if widget hasn't been sized yet, use a fallback
+        if widget_size.width() <= 0 or widget_size.height() <= 0:
+            widget_size.setWidth(max(640, self.processing_width))
+            widget_size.setHeight(max(360, self.processing_height))
+        
         # Calculate scaling to fit widget
         scaled_pixmap = pixmap.scaled(
             widget_size,
@@ -3980,7 +4208,7 @@ class VideoPanel(QWidget):
         # Calculate offsets for letterbox/pillarbox
         self.offset_x = (widget_size.width() - scaled_pixmap.width()) // 2
         self.offset_y = (widget_size.height() - scaled_pixmap.height()) // 2
-        self.scale = scaled_pixmap.width() / width
+        self.scale = scaled_pixmap.width() / width if width > 0 else 1.0
         
         self.display_pixmap = scaled_pixmap
         self.video_label.setPixmap(scaled_pixmap)
@@ -3996,6 +4224,22 @@ class VideoPanel(QWidget):
         self.zones = zones
         if self.current_frame is not None:
             self._render_frame()
+    
+    def set_persons(self, persons: list) -> None:
+        """Set detected persons to display.
+        
+        Args:
+            persons: List of (x1, y1, x2, y2) bounding boxes
+        """
+        self.persons = persons
+    
+    def set_zone_violations(self, violations: dict) -> None:
+        """Set which zones have violations to highlight them in red.
+        
+        Args:
+            violations: Dict of {zone_id: True/False}
+        """
+        self.zone_violations = violations
     
     def widget_to_processing(self, widget_x: int, widget_y: int) -> Tuple[int, int]:
         """Convert widget coordinates to processing coordinates.
@@ -4568,7 +4812,6 @@ class StoppableThread(threading.Thread):
         return self._stop_event.wait(timeout)
     
 
-
 # =============================================================================
 # File: utils/time_utils.py
 # =============================================================================
@@ -4699,9 +4942,9 @@ def main():
             config_manager.update_processing_resolution(app_resolution)
             config_manager.save()
             
-            logger.info(f"✓ Zones rescaled and saved")
+            logger.info(f"[OK] Zones rescaled and saved")
         else:
-            logger.info(f"✓ Resolution in sync: {app_resolution}")
+            logger.info(f"[OK] Resolution in sync: {app_resolution}")
         
         # ========================================
         # Initialize camera manager with SYNCED resolution
@@ -4728,7 +4971,10 @@ def main():
                 logger.info("Using pyhid_usb_relay hardware")
             except Exception as e:
                 logger.error(f"Failed to initialize USB relay: {e}")
-                logger.error("Falling back to relay simulator")
+                logger.error("Relay will be disabled. Detection will still work but relays won't activate.")
+                relay_interface = None
+        else:
+            logger.info("USB relay disabled in app_settings.json")
         
         relay_manager = RelayManager(
             interface=relay_interface,
