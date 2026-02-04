@@ -414,52 +414,98 @@ class SettingsPage(QWidget):
             logger.info("Settings reset to defaults")
     
     def _start_relay_test(self) -> None:
-        """Start relay testing sequence."""
-        self.test_relay_index = 1
+        """Start relay testing sequence for all available channels."""
+        # Get available channels from relay manager
+        if not self.relay_manager.available_channels:
+            QMessageBox.warning(
+                self,
+                "No Relay Device",
+                "No relay device detected!\n\n"
+                "Please ensure your USB relay is connected and try again."
+            )
+            return
+        
+        num_channels = self.relay_manager.num_channels
+        available = self.relay_manager.available_channels
+        
+        logger.info("=" * 60)
+        logger.info("RELAY TESTING SEQUENCE STARTED")
+        logger.info("=" * 60)
+        logger.info(f"Relay device detected: {num_channels} channels")
+        logger.info(f"Testing channels: {available}")
+        logger.info("=" * 60)
+        
+        self.test_relay_index = 0
         self._test_next_relay()
     
     def _test_next_relay(self) -> None:
-        """Test next relay in sequence."""
-        max_channels = self.num_channels.value()
+        """Test next available relay channel."""
+        available_channels = self.relay_manager.available_channels
         
-        if self.test_relay_index > max_channels:
+        # Check if all channels tested
+        if self.test_relay_index >= len(available_channels):
+            logger.info("=" * 60)
+            logger.info("RELAY TESTING SEQUENCE COMPLETE")
+            logger.info("=" * 60)
+            
             QMessageBox.information(
                 self,
                 "Test Complete",
-                f"All {max_channels} relays tested successfully!"
+                f"All {self.relay_manager.num_channels} relay channels tested successfully!\n\n"
+                f"Channels tested: {available_channels}\n\n"
+                f"Review logs for detailed results."
             )
             self.status_label.setText("Relay test completed")
             self.status_label.setStyleSheet("color: green; font-weight: bold;")
             return
         
+        # Get current channel
+        current_channel = available_channels[self.test_relay_index]
+        channel_num = self.test_relay_index + 1
+        total_channels = len(available_channels)
+        
         # Show dialog for current relay
         msg = QMessageBox(self)
-        msg.setWindowTitle(f"Testing Relay {self.test_relay_index}")
+        msg.setWindowTitle(f"Testing Relay {current_channel}")
         msg.setText(
-            f"Testing Relay {self.test_relay_index} of {max_channels}\n\n"
-            f"The relay will now toggle ON then OFF.\n"
+            f"Testing Channel {channel_num} of {total_channels}\n\n"
+            f"Relay Channel: {current_channel}\n\n"
+            f"The relay will toggle ON then OFF for 1 second.\n"
             f"Please observe the relay indicator/load.\n\n"
-            f"Did Relay {self.test_relay_index} activate?"
+            f"Did the relay activate?"
         )
         msg.setIcon(QMessageBox.Question)
         
         yes_btn = msg.addButton("Yes, it worked", QMessageBox.YesRole)
         no_btn = msg.addButton("No, didn't work", QMessageBox.NoRole)
-        next_btn = msg.addButton("Next Relay", QMessageBox.AcceptRole)
         cancel_btn = msg.addButton("Cancel Test", QMessageBox.RejectRole)
         
-        # Activate relay
+        # Test relay
         try:
-            logger.info(f"Testing relay {self.test_relay_index}")
-            self.relay_manager.trigger(self.test_relay_index)
-            self.status_label.setText(f"Testing Relay {self.test_relay_index}...")
+            logger.info(f"Testing relay channel {current_channel} ({channel_num}/{total_channels})")
+            self.status_label.setText(f"Testing Relay {current_channel}...")
             self.status_label.setStyleSheet("color: orange; font-weight: bold;")
+            
+            # Use the relay manager's test_relay method
+            success = self.relay_manager.test_relay(
+                current_channel,
+                duration=1.0
+            )
+            
+            if not success:
+                logger.warning(f"Relay {current_channel} test returned False")
+        
         except Exception as e:
-            logger.error(f"Failed to test relay {self.test_relay_index}: {e}")
+            logger.error(f"Failed to test relay {current_channel}: {e}")
             QMessageBox.critical(
                 self,
                 "Relay Test Error",
-                f"Failed to activate relay {self.test_relay_index}:\n{e}"
+                f"Failed to activate relay {current_channel}:\n\n{e}\n\n"
+                f"Possible issues:\n"
+                f"- Relay hardware not connected\n"
+                f"- Incorrect USB port/device\n"
+                f"- Hardware failure\n\n"
+                f"Check logs for more details."
             )
             return
         
@@ -468,22 +514,25 @@ class SettingsPage(QWidget):
         clicked = msg.clickedButton()
         
         if clicked == cancel_btn:
+            logger.info("Relay test cancelled by user")
             self.status_label.setText("Relay test cancelled")
             self.status_label.setStyleSheet("color: gray;")
             return
         elif clicked == no_btn:
+            logger.warning(f"Relay {current_channel} did not activate as expected")
             QMessageBox.warning(
                 self,
-                "Relay Issue",
-                f"Relay {self.test_relay_index} did not activate.\n\n"
+                "Relay Issue Detected",
+                f"Relay {current_channel} did not activate.\n\n"
                 f"Possible issues:\n"
-                f"- Relay hardware not connected\n"
-                f"- Incorrect channel number\n"
-                f"- Hardware failure\n"
-                f"- Check logs for details"
+                f"  • Relay hardware not connected\n"
+                f"  • Incorrect channel number\n"
+                f"  • Hardware failure\n"
+                f"  • Defective relay\n\n"
+                f"Check logs and connection for more details."
             )
         elif clicked == yes_btn:
-            logger.info(f"Relay {self.test_relay_index} test successful")
+            logger.info(f"[OK] Relay {current_channel} test successful")
         
         # Move to next relay
         self.test_relay_index += 1
